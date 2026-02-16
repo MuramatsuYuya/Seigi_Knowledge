@@ -117,17 +117,23 @@
                         <span id="currentFolderDisplay" class="folder-display">未選択</span>
                     </div>
                 </div>
-                <button class="nav-tab" data-page="index">
+                <button class="nav-tab active" data-page="pdf-processing">
                     📄 技術資料のナレッジ化
                 </button>
                 <button class="nav-tab" data-page="knowledge-query">
                     🔍 AI質問
                 </button>
-                <button class="nav-tab active" data-page="verification-plan">
+                <button class="nav-tab" data-page="verification-plan">
                     📋 検証計画
                 </button>
                 <button class="nav-tab" data-page="specification">
                     📖 仕様書
+                </button>
+                <button class="nav-tab" data-page="prompt-management">
+                    ⚙️ テンプレート管理
+                </button>
+                <button id="logoutBtn" class="btn btn-secondary btn-small">
+                    ログアウト
                 </button>
             </nav>
         </div>
@@ -160,7 +166,7 @@
                 
                 <!-- Job ID Selection (Optional) -->
                 <div class="form-section">
-                    <h3>🔑 JOB_ID <span class="optional-badge">オプション</span></h3>
+                    <h3>🔑 JOB_ID <span class="optional-badge">開発者用</span></h3>
                     <input 
                         type="text" 
                         id="jobIdInputModal" 
@@ -171,6 +177,7 @@
             </div>
             <div class="modal-footer">
                 <button id="applySearchTargetBtn" class="btn btn-primary btn-large">適用</button>
+                <button id="startFromHistoryBtn" class="btn btn-secondary">📋 履歴から始める</button>
                 <button id="cancelSearchTargetBtn" class="btn btn-secondary">キャンセル</button>
             </div>
         </div>
@@ -225,6 +232,18 @@
                 <div id="chatHistory" class="chat-history">
                     <div class="chat-message system-message">
                         <p>検索対象を上のボタンから選択してください。</p>
+                    </div>
+                </div>
+
+                <!-- Template Selector -->
+                <div class="template-selector-bar" id="templateSelectorBar">
+                    <div class="template-selector-row">
+                        <label for="promptTemplateSelect">📝 出力テンプレート:</label>
+                        <select id="promptTemplateSelect" class="template-select">
+                            <option value="">テンプレートなし（自由入力）</option>
+                        </select>
+                        <button id="insertTemplateBtn" class="btn btn-small btn-accent" title="テンプレートを入力欄に挿入">挿入</button>
+                        <a href="prompt-management.html" class="btn btn-small btn-secondary" title="テンプレート管理">⚙️ 管理</a>
                     </div>
                 </div>
 

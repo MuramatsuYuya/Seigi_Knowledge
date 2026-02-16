@@ -1708,8 +1708,80 @@ input[type="password"]:focus {
     color: #1565c0;
 }
 
+/* Folder selection state visual indicators */
+.folder-tree-modal .folder-item.parent.folder-all-selected {
+    background: #1976d2 !important;
+    color: white;
+    font-weight: 700;
+}
+
+.folder-tree-modal .folder-item.parent.folder-all-selected span,
+.folder-tree-modal .folder-item.parent.folder-all-selected button {
+    color: white;
+}
+
+.folder-tree-modal .folder-item.parent.folder-all-selected .folder-select-all-btn,
+.folder-tree-modal .folder-item.parent.folder-all-selected .folder-deselect-all-btn {
+    background: rgba(255, 255, 255, 0.2);
+    border-color: white;
+    color: white;
+}
+
+.folder-tree-modal .folder-item.parent.folder-all-selected .folder-select-all-btn:hover,
+.folder-tree-modal .folder-item.parent.folder-all-selected .folder-deselect-all-btn:hover {
+    background: rgba(255, 255, 255, 0.4);
+}
+
+.folder-tree-modal .folder-item.parent.folder-partial-selected {
+    background: #bbdefb !important;
+    color: #0d47a1;
+    font-weight: 600;
+    border-left: 4px solid #2196f3;
+}
+
+.folder-tree-modal .folder-item.parent.folder-none-selected {
+    /* Default styling - no special background */
+}
+
 .folder-tree-modal .folder-item.leaf {
     color: #424242;
+}
+
+/* Folder select/deselect buttons */
+.folder-select-all-btn,
+.folder-deselect-all-btn {
+    padding: 4px 8px;
+    font-size: 12px;
+    border: 1px solid #2196f3;
+    background: white;
+    color: #2196f3;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.folder-select-all-btn:hover {
+    background: #2196f3;
+    color: white;
+}
+
+.folder-deselect-all-btn {
+    border-color: #757575;
+    color: #757575;
+}
+
+.folder-deselect-all-btn:hover {
+    background: #757575;
+    color: white;
+}
+
+.folder-toggle-icon {
+    user-select: none;
+}
+
+.folder-children {
+    margin-left: 0;
 }
 
 /* Selected Folders Display */
@@ -2332,4 +2404,56 @@ input[type="password"]:focus {
     color: #333;
     margin: 0;
     font-weight: 500;
+}
+
+/* =====================================================
+   Template Selector Bar (on chat pages)
+   ===================================================== */
+.template-selector-bar {
+    margin-bottom: 0.75rem;
+    padding: 0.6rem 0.8rem;
+    background: #f8f9fa;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+}
+
+.template-selector-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.template-selector-row label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #555;
+    white-space: nowrap;
+}
+
+.template-select {
+    flex: 1;
+    min-width: 180px;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    background: white;
+}
+
+.template-select:focus {
+    outline: none;
+    border-color: #d32f2f;
+    box-shadow: 0 0 0 2px rgba(211, 47, 47, 0.1);
+}
+
+.template-selector-row .btn-small {
+    padding: 0.35rem 0.7rem;
+    font-size: 0.8rem;
+}
+
+.template-selector-row a.btn {
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
 }

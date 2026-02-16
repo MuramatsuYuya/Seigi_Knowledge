@@ -85,6 +85,12 @@ class DoctoKnowApp {
             return;
         }
         
+        // If switching to prompt management, navigate to that page
+        if (pageName === 'prompt-management') {
+            window.location.href = 'prompt-management.html';
+            return;
+        }
+        
         // For other pages, update nav tabs and page content
         const navTabs = document.querySelectorAll('.nav-tab');
         navTabs.forEach(tab => {

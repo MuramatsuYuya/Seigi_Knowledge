@@ -19,6 +19,8 @@ class KnowledgeQueryApp {
         this.chatSessionId = null;
         this.useAgent = true;  // Agent利用フラグ（固定: true）
         this.agentType = 'specification';  // 仕様書作成Agent
+        this.templateAgentType = 'SPECIFICATION';  // テンプレートAPI用
+        this.promptTemplates = [];  // 利用可能なテンプレート一覧
         
         // Cognito認証マネージャーへの参照
         this.authManager = null;
@@ -41,6 +43,7 @@ class KnowledgeQueryApp {
         this.loadSearchTargetFromStorage();
         this.updateActivityState();  // Initialize activity state
         this.initializeAuthManager();  // 認証マネージャーの初期化
+        this.loadPromptTemplates();  // テンプレート読み込み
     }
     
     /**
@@ -141,6 +144,7 @@ class KnowledgeQueryApp {
             closeSearchTargetBtn: document.getElementById('closeSearchTargetBtn'),
             cancelSearchTargetBtn: document.getElementById('cancelSearchTargetBtn'),
             applySearchTargetBtn: document.getElementById('applySearchTargetBtn'),
+            startFromHistoryBtn: document.getElementById('startFromHistoryBtn'),
             
             // Folder tree elements
             folderTreeContainer: document.getElementById('folderTreeContainer'),
@@ -232,6 +236,20 @@ class KnowledgeQueryApp {
             this.closeSearchTargetModal();
         });
         
+        this.elements.startFromHistoryBtn.addEventListener('click', () => {
+            try {
+                // Expand history sidebar if collapsed
+                if (window.historySidebarManager && window.historySidebarManager.isCollapsed) {
+                    window.historySidebarManager.toggleSidebar();
+                }
+            } catch (error) {
+                console.error('[startFromHistoryBtn] Error expanding sidebar:', error);
+            } finally {
+                // Always close modal even if error occurs
+                this.closeSearchTargetModal();
+            }
+        });
+        
         this.elements.applySearchTargetBtn.addEventListener('click', () => {
             this.applySearchTarget();
         });
@@ -264,6 +282,16 @@ class KnowledgeQueryApp {
             this.elements.resetChatBtn.addEventListener('click', () => this.resetChatSession());
         }
         
+        // Template selector listeners
+        const insertTemplateBtn = document.getElementById('insertTemplateBtn');
+        const promptTemplateSelect = document.getElementById('promptTemplateSelect');
+        if (insertTemplateBtn) {
+            insertTemplateBtn.addEventListener('click', () => this.insertSelectedTemplate());
+        }
+        if (promptTemplateSelect) {
+            promptTemplateSelect.addEventListener('change', () => this.onTemplateSelected());
+        }
+        
         // Navigation buttons
         document.querySelectorAll('.nav-tab').forEach(button => {
             button.addEventListener('click', (e) => {
@@ -278,6 +306,90 @@ class KnowledgeQueryApp {
         });
     }
     
+    // ===== Template Methods =====
+
+    /**
+     * Load prompt templates from backend API
+     */
+    async loadPromptTemplates() {
+        try {
+            const response = await this.apiRequest(
+                `${this.apiEndpoint}/prompt-templates?agentType=${this.templateAgentType}`
+            );
+            if (response.ok) {
+                const data = await response.json();
+                this.promptTemplates = data.templates || [];
+                this.populateTemplateDropdown();
+                console.log('[loadPromptTemplates] Loaded', this.promptTemplates.length, 'templates');
+            } else {
+                console.warn('[loadPromptTemplates] Failed to load templates:', response.status);
+            }
+        } catch (error) {
+            console.error('[loadPromptTemplates] Error:', error);
+        }
+    }
+
+    /**
+     * Populate the template dropdown with loaded templates
+     */
+    populateTemplateDropdown() {
+        const select = document.getElementById('promptTemplateSelect');
+        if (!select) return;
+
+        while (select.options.length > 1) {
+            select.remove(1);
+        }
+
+        this.promptTemplates.forEach(template => {
+            const option = document.createElement('option');
+            option.value = template.templateId;
+            const defaultMarker = template.isDefault ? ' ★' : '';
+            option.textContent = `${template.name}${defaultMarker}`;
+            option.dataset.prompt = template.editablePrompt || '';
+            select.appendChild(option);
+        });
+
+        const defaultTemplate = this.promptTemplates.find(t => t.isDefault);
+        if (defaultTemplate) {
+            select.value = defaultTemplate.templateId;
+        }
+    }
+
+    /**
+     * Handle template dropdown selection change
+     */
+    onTemplateSelected() {
+        const select = document.getElementById('promptTemplateSelect');
+        if (!select) return;
+        console.log('[onTemplateSelected] Selected:', select.value);
+    }
+
+    /**
+     * Insert selected template content into the query input
+     */
+    insertSelectedTemplate() {
+        const select = document.getElementById('promptTemplateSelect');
+        if (!select || !select.value) return;
+
+        const template = this.promptTemplates.find(t => t.templateId === select.value);
+        if (!template) return;
+
+        const queryInput = this.elements.queryInput;
+        const currentValue = queryInput.value.trim();
+        
+        if (currentValue) {
+            queryInput.value = currentValue + '\n\n' + template.editablePrompt;
+        } else {
+            queryInput.value = template.editablePrompt;
+        }
+
+        queryInput.style.height = 'auto';
+        queryInput.style.height = Math.min(queryInput.scrollHeight, 300) + 'px';
+        queryInput.focus();
+
+        console.log('[insertSelectedTemplate] Inserted template:', template.name);
+    }
+
     // ===== Resize Bar Methods =====
     
     /**
@@ -489,6 +601,8 @@ class KnowledgeQueryApp {
                 return;
             }
             
+            // フォルダツリーを保存して後で参照できるようにする
+            this.currentFolders = folders;
             this.renderFolderTreeWithCheckboxes(folders, 0);
             
         } catch (error) {
@@ -497,9 +611,11 @@ class KnowledgeQueryApp {
         }
     }
     
-    renderFolderTreeWithCheckboxes(folders, level) {
+    renderFolderTreeWithCheckboxes(folders, level, parentContainer = null) {
         if (!folders || folders.length === 0) {
-            this.elements.folderTreeContainer.innerHTML = '<p class="placeholder-text">フォルダが見つかりません</p>';
+            if (level === 0) {
+                this.elements.folderTreeContainer.innerHTML = '<p class="placeholder-text">フォルダが見つかりません</p>';
+            }
             return;
         }
         
@@ -507,6 +623,8 @@ class KnowledgeQueryApp {
         if (level === 0) {
             this.elements.folderTreeContainer.innerHTML = '';
         }
+        
+        const container = parentContainer || this.elements.folderTreeContainer;
         
         folders.forEach(folder => {
             const folderItem = document.createElement('div');
@@ -518,6 +636,7 @@ class KnowledgeQueryApp {
                 checkbox.type = 'checkbox';
                 checkbox.value = folder.path;
                 checkbox.id = `folder-${folder.path.replace(/\//g, '-')}`;
+                checkbox.dataset.folderPath = folder.path;
                 
                 // 既に選択されているかチェック
                 if (this.selectedFolderPaths.includes(folder.path)) {
@@ -528,6 +647,8 @@ class KnowledgeQueryApp {
                 checkbox.addEventListener('change', (e) => {
                     this.toggleFolderSelection(folder.path, e.target.checked);
                     folderItem.classList.toggle('checked', e.target.checked);
+                    // すべての親フォルダの選択状態を更新
+                    this.updateAllFolderStates();
                 });
                 
                 const icon = document.createTextNode('📄 ');
@@ -541,22 +662,187 @@ class KnowledgeQueryApp {
                 folderItem.appendChild(label);
                 folderItem.classList.add('leaf');
             } else {
-                // 親フォルダはチェックボックスなし
-                const icon = document.createTextNode('📁 ');
-                const text = document.createTextNode(folder.name);
-                folderItem.appendChild(icon);
-                folderItem.appendChild(text);
+                // 親フォルダ: 折りたたみボタン + フォルダ名 + 一括選択ボタン
+                const headerDiv = document.createElement('div');
+                headerDiv.style.display = 'flex';
+                headerDiv.style.alignItems = 'center';
+                headerDiv.style.gap = '8px';
+                headerDiv.style.flex = '1';
+                
+                // 折りたたみアイコン
+                const toggleIcon = document.createElement('span');
+                toggleIcon.textContent = '▶';
+                toggleIcon.className = 'folder-toggle-icon';
+                toggleIcon.style.cursor = 'pointer';
+                toggleIcon.style.fontSize = '12px';
+                toggleIcon.style.transition = 'transform 0.2s';
+                toggleIcon.style.display = 'inline-block';
+                toggleIcon.style.width = '16px';
+                
+                // フォルダ名部分
+                const folderNameSpan = document.createElement('span');
+                folderNameSpan.style.display = 'flex';
+                folderNameSpan.style.alignItems = 'center';
+                folderNameSpan.style.gap = '4px';
+                folderNameSpan.style.cursor = 'pointer';
+                folderNameSpan.style.flex = '1';
+                const folderIcon = document.createTextNode('📁 ');
+                const folderName = document.createTextNode(folder.name);
+                folderNameSpan.appendChild(folderIcon);
+                folderNameSpan.appendChild(folderName);
+                
+                // 一括選択ボタン
+                const selectAllBtn = document.createElement('button');
+                selectAllBtn.textContent = 'すべて選択';
+                selectAllBtn.className = 'folder-select-all-btn';
+                selectAllBtn.style.marginLeft = 'auto';
+                selectAllBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.selectAllInFolder(folder, true);
+                });
+                
+                // 一括解除ボタン
+                const deselectAllBtn = document.createElement('button');
+                deselectAllBtn.textContent = 'すべて解除';
+                deselectAllBtn.className = 'folder-deselect-all-btn';
+                deselectAllBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.selectAllInFolder(folder, false);
+                });
+                
+                headerDiv.appendChild(toggleIcon);
+                headerDiv.appendChild(folderNameSpan);
+                headerDiv.appendChild(selectAllBtn);
+                headerDiv.appendChild(deselectAllBtn);
+                
+                folderItem.appendChild(headerDiv);
                 folderItem.classList.add('parent');
-                folderItem.style.cursor = 'default';
+                // 親フォルダにフォルダオブジェクトを保存
+                folderItem.dataset.folderData = JSON.stringify({
+                    path: folder.path,
+                    name: folder.name,
+                    is_leaf: folder.is_leaf
+                });
             }
             
-            this.elements.folderTreeContainer.appendChild(folderItem);
+            container.appendChild(folderItem);
             
-            // 子フォルダを再帰的にレンダリング
+            // 親フォルダの選択状態を初期設定
+            if (!folder.is_leaf) {
+                this.updateFolderSelectionState(folderItem, folder);
+            }
+            
+            // 子フォルダを再帰的にレンダリング（初期状態：非表示）
             if (folder.children && folder.children.length > 0) {
-                this.renderFolderTreeWithCheckboxes(folder.children, level + 1);
+                const childrenContainer = document.createElement('div');
+                childrenContainer.className = 'folder-children';
+                childrenContainer.style.display = 'none'; // 初期状態: 閉じる
+                
+                container.appendChild(childrenContainer);
+                this.renderFolderTreeWithCheckboxes(folder.children, level + 1, childrenContainer);
+                
+                // 親フォルダでない場合はtoggleIconは存在しないのでチェック
+                if (!folder.is_leaf) {
+                    const toggleIcon = folderItem.querySelector('.folder-toggle-icon');
+                    const folderNameSpan = folderItem.querySelector('span:nth-child(2)');
+                    
+                    const toggleChildren = () => {
+                        const isHidden = childrenContainer.style.display === 'none';
+                        childrenContainer.style.display = isHidden ? 'block' : 'none';
+                        toggleIcon.style.transform = isHidden ? 'rotate(90deg)' : 'rotate(0deg)';
+                    };
+                    
+                    toggleIcon.addEventListener('click', toggleChildren);
+                    folderNameSpan.addEventListener('click', toggleChildren);
+                }
             }
         });
+    }
+    
+    // フォルダ配下のすべてのリーフフォルダを選択/解除
+    selectAllInFolder(folder, select) {
+        const leafPaths = this.getAllLeafPaths(folder);
+        leafPaths.forEach(path => {
+            this.toggleFolderSelection(path, select);
+            // チェックボックスのUIも更新
+            const checkbox = document.querySelector(`input[data-folder-path="${path}"]`);
+            if (checkbox) {
+                checkbox.checked = select;
+                const folderItem = checkbox.closest('.folder-item');
+                if (folderItem) {
+                    folderItem.classList.toggle('checked', select);
+                }
+            }
+        });
+        // すべてのフォルダの選択状態を更新
+        this.updateAllFolderStates();
+    }
+    
+    // フォルダ配下のすべてのリーフパスを取得（再帰的）
+    getAllLeafPaths(folder) {
+        let paths = [];
+        if (folder.is_leaf) {
+            paths.push(folder.path);
+        }
+        if (folder.children && folder.children.length > 0) {
+            folder.children.forEach(child => {
+                paths = paths.concat(this.getAllLeafPaths(child));
+            });
+        }
+        return paths;
+    }
+    
+    // フォルダの選択状態を取得（'all', 'partial', 'none'）
+    getSelectionState(folder) {
+        const leafPaths = this.getAllLeafPaths(folder);
+        if (leafPaths.length === 0) return 'none';
+        
+        const selectedCount = leafPaths.filter(path => 
+            this.selectedFolderPaths.includes(path)
+        ).length;
+        
+        if (selectedCount === 0) return 'none';
+        if (selectedCount === leafPaths.length) return 'all';
+        return 'partial';
+    }
+    
+    // フォルダ要素の選択状態を更新
+    updateFolderSelectionState(folderElement, folder) {
+        const state = this.getSelectionState(folder);
+        folderElement.classList.remove('folder-all-selected', 'folder-partial-selected', 'folder-none-selected');
+        folderElement.classList.add(`folder-${state}-selected`);
+    }
+    
+    // すべてのフォルダの選択状態を更新
+    updateAllFolderStates() {
+        // すべての親フォルダ要素を取得
+        const parentFolders = document.querySelectorAll('.folder-item.parent[data-folder-data]');
+        parentFolders.forEach(folderElement => {
+            try {
+                const folderData = JSON.parse(folderElement.dataset.folderData);
+                // フォルダオブジェクトを再構築する必要があるため、現在のフォルダツリーから検索
+                const folder = this.findFolderByPath(this.currentFolders, folderData.path);
+                if (folder) {
+                    this.updateFolderSelectionState(folderElement, folder);
+                }
+            } catch (e) {
+                console.error('Error updating folder state:', e);
+            }
+        });
+    }
+    
+    // パスからフォルダオブジェクトを検索（再帰的）
+    findFolderByPath(folders, targetPath) {
+        for (const folder of folders) {
+            if (folder.path === targetPath) {
+                return folder;
+            }
+            if (folder.children && folder.children.length > 0) {
+                const found = this.findFolderByPath(folder.children, targetPath);
+                if (found) return found;
+            }
+        }
+        return null;
     }
     
     toggleFolderSelection(folderPath, isSelected) {
@@ -806,7 +1092,7 @@ class KnowledgeQueryApp {
         console.log('[resetChatSession] Resetting chat session...');
         
         // Clear existing session ID from sessionStorage
-        sessionStorage.removeItem('chatSessionId');
+        sessionStorage.removeItem('specificationSessionId');
         
         // Generate new session ID
         const generateUUID = () => {
@@ -817,8 +1103,8 @@ class KnowledgeQueryApp {
             });
         };
         
-        this.chatSessionId = generateUUID();
-        sessionStorage.setItem('chatSessionId', this.chatSessionId);
+        this.chatSessionId = 'specification_' + generateUUID();
+        sessionStorage.setItem('specificationSessionId', this.chatSessionId);
         
         // Clear chat messages and UI
         this.chatMessages = [];

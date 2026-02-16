@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>プロンプトテンプレート管理 - DoctorKnow</title>
+    <link rel="stylesheet" href="style.css">
+    
+    <script>
+        // Reserved for deployment script to inject API configuration
+        // Do not edit manually
+        window.API_CONFIG = window.API_CONFIG || {};
+    </script>
+    
+    <!-- AWS SDK for Cognito -->
+    <script src="https://sdk.amazonaws.com/js/aws-sdk-2.1000.0.min.js"></script>
+    
+    <!-- Authentication Guard -->
+    <script>
+        (function() {
+            async function checkAuthentication() {
+                const accessToken = localStorage.getItem('cognito_access_token');
+                if (!accessToken) {
+                    console.warn('[prompt-management.html] Not authenticated. Redirecting to index.html');
+                    window.location.href = 'index.html';
+                    return false;
+                }
+                const expiresAt = localStorage.getItem('cognito_token_expires_at');
+                if (expiresAt) {
+                    const now = Date.now();
+                    const expiryTime = parseInt(expiresAt, 10);
+                    if (now >= expiryTime) {
+                        console.warn('[prompt-management.html] Token expired. Attempting refresh...');
+                        const refreshToken = localStorage.getItem('cognito_refresh_token');
+                        if (refreshToken) {
+                            try {
+                                const authManager = await waitForAuthManager();
+                                if (authManager) {
+                                    const refreshResult = await authManager.refreshAccessToken();
+                                    if (refreshResult.success) {
+                                        console.log('[prompt-management.html] Token refreshed successfully');
+                                        return true;
+                                    }
+                                }
+                            } catch (error) {
+                                console.error('[prompt-management.html] Token refresh failed:', error);
+                            }
+                        }
+                        console.warn('[prompt-management.html] Token refresh failed. Redirecting to index.html');
+                        localStorage.removeItem('cognito_access_token');
+                        localStorage.removeItem('cognito_id_token');
+                        localStorage.removeItem('cognito_token_expires_at');
+                        window.location.href = 'index.html';
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            function waitForAuthManager() {
+                return new Promise((resolve) => {
+                    if (window.promptMgmtAuthManager) {
+                        resolve(window.promptMgmtAuthManager);
+                        return;
+                    }
+                    const checkInterval = setInterval(() => {
+                        if (window.promptMgmtAuthManager) {
+                            clearInterval(checkInterval);
+                            resolve(window.promptMgmtAuthManager);
+                        }
+                    }, 100);
+                    setTimeout(() => {
+                        clearInterval(checkInterval);
+                        resolve(null);
+                    }, 5000);
+                });
+            }
+
+            setTimeout(() => {
+                checkAuthentication();
+            }, 500);
+        })();
+    </script>
+    
+    <style>
+        /* Prompt Management Specific Styles */
+        .prompt-mgmt-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 1rem;
+        }
+
+        .agent-type-tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            border-bottom: 2px solid #e0e0e0;
+            padding-bottom: 0;
+        }
+
+        .agent-type-tab {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            background: #f5f5f5;
+            cursor: pointer;
+            border-radius: 8px 8px 0 0;
+            font-size: 0.95rem;
+            font-weight: 500;
+            color: #666;
+            transition: all 0.2s;
+            border: 1px solid #e0e0e0;
+            border-bottom: none;
+            margin-bottom: -2px;
+        }
+
+        .agent-type-tab:hover {
+            background: #e8e8e8;
+            color: #333;
+        }
+
+        .agent-type-tab.active {
+            background: #fff;
+            color: #d32f2f;
+            border-color: #e0e0e0;
+            border-bottom-color: #fff;
+            font-weight: 600;
+        }
+
+        .template-controls {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+        }
+
+        .template-controls label {
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .template-controls select {
+            flex: 1;
+            min-width: 250px;
+            padding: 0.6rem;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 0.95rem;
+        }
+
+        .template-info-section {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .template-info-section .form-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .template-info-section label {
+            font-weight: 600;
+            margin-bottom: 0.3rem;
+            font-size: 0.9rem;
+        }
+
+        .template-info-section input,
+        .template-info-section textarea {
+            padding: 0.5rem;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 0.95rem;
+        }
+
+        .template-info-section textarea {
+            height: 60px;
+            resize: vertical;
+        }
+
+        .prompt-section {
+            margin-bottom: 1.5rem;
+        }
+
+        .prompt-section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .prompt-section-header h3 {
+            margin: 0;
+            font-size: 1.05rem;
+        }
+
+        .prompt-section-header .badge {
+            padding: 0.2rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .badge-fixed {
+            background: #e0e0e0;
+            color: #666;
+        }
+
+        .badge-editable {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+
+        .fixed-prompt-display {
+            background: #f9f9f9;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+            color: #555;
+        }
+
+        .editable-prompt-editor {
+            width: 100%;
+            min-height: 400px;
+            padding: 1rem;
+            border: 2px solid #1976d2;
+            border-radius: 8px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+
+        .editable-prompt-editor:focus {
+            outline: none;
+            border-color: #d32f2f;
+            box-shadow: 0 0 0 3px rgba(211, 47, 47, 0.1);
+        }
+
+        .editor-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 0.5rem;
+        }
+
+        .char-counter {
+            font-size: 0.85rem;
+            color: #888;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+            justify-content: flex-end;
+            flex-wrap: wrap;
+        }
+
+        .action-buttons .btn {
+            padding: 0.75rem 1.5rem;
+            font-size: 0.95rem;
+        }
+
+        .btn-danger {
+            background: #d32f2f;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        .btn-danger:hover {
+            background: #b71c1c;
+        }
+
+        .btn-success {
+            background: #2e7d32;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        .btn-success:hover {
+            background: #1b5e20;
+        }
+
+        .default-checkbox-container {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .default-checkbox-container input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+        }
+
+        .default-checkbox-container label {
+            font-weight: 500;
+            cursor: pointer;
+        }
+
+        .preview-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .preview-modal.active {
+            display: flex;
+        }
+
+        .preview-content {
+            background: white;
+            width: 90%;
+            max-width: 900px;
+            max-height: 85vh;
+            border-radius: 12px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .preview-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid #e0e0e0;
+            background: #f5f5f5;
+        }
+
+        .preview-header h3 {
+            margin: 0;
+        }
+
+        .preview-body {
+            padding: 1.5rem;
+            overflow-y: auto;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+
+        .status-toast {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            padding: 1rem 1.5rem;
+            border-radius: 8px;
+            color: white;
+            font-weight: 500;
+            z-index: 10000;
+            animation: slideIn 0.3s ease;
+            display: none;
+        }
+
+        .status-toast.success { background: #2e7d32; }
+        .status-toast.error { background: #d32f2f; }
+        .status-toast.info { background: #1976d2; }
+        .status-toast.visible { display: block; }
+
+        .fixed-toggle-btn {
+            font-size: 0.8rem;
+            padding: 0.3rem 0.8rem;
+            background: none;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            cursor: pointer;
+            color: #666;
+        }
+
+        .fixed-toggle-btn:hover {
+            background: #f0f0f0;
+        }
+
+        @media (max-width: 768px) {
+            .agent-type-tabs {
+                flex-direction: column;
+            }
+            .template-info-section {
+                grid-template-columns: 1fr;
+            }
+            .template-controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Header Navigation -->
+    <header class="app-header">
+        <div class="header-content">
+            <h1 class="header-title">生技ナレッジAI</h1>
+            <nav class="header-nav">
+                <button class="nav-tab active" data-page="pdf-processing">
+                    📄 技術資料のナレッジ化
+                </button>
+                <button class="nav-tab" data-page="knowledge-query">
+                    🔍 AI質問
+                </button>
+                <button class="nav-tab" data-page="verification-plan">
+                    📋 検証計画
+                </button>
+                <button class="nav-tab" data-page="specification">
+                    📖 仕様書
+                </button>
+                <button class="nav-tab" data-page="prompt-management">
+                    ⚙️ テンプレート管理
+                </button>
+                <button id="logoutBtn" class="btn btn-secondary btn-small">
+                    ログアウト
+                </button>
+            </nav>
+        </div>
+    </header>
+
+    <div class="prompt-mgmt-container">
+        <h2>📝 プロンプトテンプレート管理</h2>
+        <p style="color: #666; margin-bottom: 1.5rem;">
+            各Agent（検証計画・仕様書・AI質問）の出力形式テンプレートを管理します。<br>
+            テンプレートを選択すると、各ページの入力欄にテンプレート内容が自動入力されます。
+        </p>
+
+        <!-- Agent Type Tabs -->
+        <div class="agent-type-tabs">
+            <button class="agent-type-tab active" data-agent="VERIFICATION">📋 検証計画作成</button>
+            <button class="agent-type-tab" data-agent="SPECIFICATION">📖 仕様書作成</button>
+            <button class="agent-type-tab" data-agent="QUERY_SUPPORT">🔍 AI質問支援</button>
+        </div>
+
+        <!-- Template Selection -->
+        <div class="template-controls">
+            <label>テンプレート:</label>
+            <select id="templateDropdown">
+                <option value="">--- 新規作成 ---</option>
+            </select>
+            <button id="loadTemplateBtn" class="btn btn-primary-blue btn-small">読込</button>
+            <button id="newTemplateBtn" class="btn btn-secondary btn-small">新規</button>
+            <button id="deleteTemplateBtn" class="btn btn-danger btn-small">削除</button>
+        </div>
+
+        <!-- Template Info -->
+        <div class="template-info-section">
+            <div class="form-group">
+                <label for="templateName">テンプレート名 <span style="color: red;">*</span></label>
+                <input type="text" id="templateName" placeholder="例: 検証計画 - 簡易版">
+            </div>
+            <div class="form-group">
+                <label for="templateDesc">説明</label>
+                <textarea id="templateDesc" placeholder="このテンプレートの用途を記入"></textarea>
+            </div>
+        </div>
+
+        <div class="default-checkbox-container">
+            <input type="checkbox" id="isDefaultCheckbox">
+            <label for="isDefaultCheckbox">このテンプレートをデフォルトに設定（各ページで初期選択されます）</label>
+        </div>
+
+        <!-- Editable Prompt Section -->
+        <div class="prompt-section">
+            <div class="prompt-section-header">
+                <h3>✏️ 編集可能部分（出力形式テンプレート）</h3>
+                <span class="badge badge-editable">カスタマイズ可能</span>
+            </div>
+            <textarea id="editablePromptEditor" class="editable-prompt-editor" 
+                      placeholder="ここに出力形式テンプレートを入力してください...&#10;&#10;例:&#10;【出力形式】&#10;以下の構成で検証計画をMarkdown形式で出力してください:&#10;..."></textarea>
+            <div class="editor-toolbar">
+                <span class="char-counter">文字数: <span id="charCount">0</span></span>
+                <button id="previewBtn" class="btn btn-secondary btn-small">👁️ プレビュー</button>
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="action-buttons">
+            <button id="saveTemplateBtn" class="btn btn-primary">💾 保存</button>
+        </div>
+    </div>
+
+    <!-- Preview Modal -->
+    <div id="previewModal" class="preview-modal">
+        <div class="preview-content">
+            <div class="preview-header">
+                <h3>📄 テンプレートプレビュー（出力形式）</h3>
+                <button id="closePreviewBtn" class="btn btn-secondary btn-small">&times; 閉じる</button>
+            </div>
+            <div id="previewBody" class="preview-body"></div>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="statusToast" class="status-toast"></div>
+
+    <!-- Application Scripts -->
+    <script src="config.js"></script>
+    <script src="auth.js"></script>
+    <script>
+        // Initialize auth manager
+        let authManager = null;
+        if (window.API_CONFIG?.cognitoUserPoolId && window.API_CONFIG?.cognitoClientId) {
+            authManager = initializeAuthManager(
+                window.API_CONFIG.cognitoUserPoolId,
+                window.API_CONFIG.cognitoClientId,
+                window.API_CONFIG.region || 'ap-northeast-1'
+            );
+            window.promptMgmtAuthManager = authManager;
+        }
+    </script>
+    <script src="prompt-management.js"></script>
+    <script>
+        // Navigation handler
+        document.querySelectorAll('.nav-tab').forEach(button => {
+            button.addEventListener('click', (e) => {
+                e.preventDefault();
+                const page = button.getAttribute('data-page');
+                const pages = {
+                    'index': 'index.html',
+                    'knowledge-query': 'knowledge-query.html',
+                    'verification-plan': 'verification-plan.html',
+                    'specification': 'specification.html',
+                    'prompt-management': 'prompt-management.html'
+                };
+                if (pages[page] && page !== 'prompt-management') {
+                    window.location.href = pages[page];
+                }
+            });
+        });
+    </script>
+</body>
+</html>

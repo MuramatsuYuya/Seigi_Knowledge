@@ -364,6 +364,45 @@
         ]
       }
     },
+    "DynamoDBPromptTemplatesTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "TableName": {
+          "Fn::Sub": "${ProjectName}-prompt-templates"
+        },
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "agentType",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "templateId",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "agentType",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "templateId",
+            "KeyType": "RANGE"
+          }
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "Prompt Templates Table"
+          },
+          {
+            "Key": "Description",
+            "Value": "Stores editable prompt templates for agent types"
+          }
+        ]
+      }
+    },
     "PDFProcessingStateMachine": {
       "Type": "AWS::StepFunctions::StateMachine",
       "Properties": {
@@ -443,6 +482,7 @@
                     "dynamodb:PutItem",
                     "dynamodb:GetItem",
                     "dynamodb:UpdateItem",
+                    "dynamodb:DeleteItem",
                     "dynamodb:Query",
                     "dynamodb:Scan"
                   ],
@@ -464,6 +504,12 @@
                     },
                     {
                       "Fn::GetAtt": ["DynamoDBQueryStatusTable", "Arn"]
+                    },
+                    {
+                      "Fn::GetAtt": ["DynamoDBPromptTemplatesTable", "Arn"]
+                    },
+                    {
+                      "Fn::Sub": "${DynamoDBPromptTemplatesTable.Arn}/index/*"
                     }
                   ]
                 }
@@ -676,6 +722,9 @@
                     },
                     {
                       "Fn::GetAtt": ["PollStatusLambda", "Arn"]
+                    },
+                    {
+                      "Fn::GetAtt": ["PromptManagementLambda", "Arn"]
                     }
                   ]
                 }
@@ -1104,6 +1153,14 @@
         "PathPart": "trigger-processing"
       }
     },
+    "ApiPromptTemplatesResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Ref": "ApiRootResource" },
+        "PathPart": "prompt-templates"
+      }
+    },
     "ApiProxyResource": {
       "Type": "AWS::ApiGateway::Resource",
       "Properties": {
@@ -1299,6 +1356,44 @@
         }
       }
     },
+    "PromptManagementLambda": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectName}-prompt-management-v0"
+        },
+        "Runtime": "python3.12",
+        "Handler": "index.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": ["LambdaExecutionRole", "Arn"]
+        },
+        "Timeout": 60,
+        "MemorySize": 256,
+        "Environment": {
+          "Variables": {
+            "DYNAMODB_PROMPT_TEMPLATES_TABLE": {
+              "Ref": "DynamoDBPromptTemplatesTable"
+            }
+          }
+        },
+        "Code": {
+          "ZipFile": "import json\nprint('PromptManagement Lambda Placeholder')\n"
+        }
+      }
+    },
+    "PromptManagementLambdaPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "PromptManagementLambda"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/*/*"
+        }
+      }
+    },
     "HistoryManagerLambdaPermission": {
       "Type": "AWS::Lambda::Permission",
       "Properties": {
@@ -1476,6 +1571,124 @@
           },
           "Credentials": { "Fn::GetAtt": ["APIGatewayRole", "Arn"] }
         }
+      }
+    },
+    "ApiPromptTemplatesGetMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiPromptTemplatesResource" },
+        "HttpMethod": "GET",
+        "AuthorizationType": "COGNITO_USER_POOLS",
+        "AuthorizerId": { "Ref": "CognitoAuthorizer" },
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PromptManagementLambda.Arn}/invocations"
+          },
+          "Credentials": {
+            "Fn::GetAtt": ["APIGatewayRole", "Arn"]
+          }
+        }
+      }
+    },
+    "ApiPromptTemplatesPostMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiPromptTemplatesResource" },
+        "HttpMethod": "POST",
+        "AuthorizationType": "COGNITO_USER_POOLS",
+        "AuthorizerId": { "Ref": "CognitoAuthorizer" },
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PromptManagementLambda.Arn}/invocations"
+          },
+          "Credentials": {
+            "Fn::GetAtt": ["APIGatewayRole", "Arn"]
+          }
+        }
+      }
+    },
+    "ApiPromptTemplatesPutMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiPromptTemplatesResource" },
+        "HttpMethod": "PUT",
+        "AuthorizationType": "COGNITO_USER_POOLS",
+        "AuthorizerId": { "Ref": "CognitoAuthorizer" },
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PromptManagementLambda.Arn}/invocations"
+          },
+          "Credentials": {
+            "Fn::GetAtt": ["APIGatewayRole", "Arn"]
+          }
+        }
+      }
+    },
+    "ApiPromptTemplatesDeleteMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiPromptTemplatesResource" },
+        "HttpMethod": "DELETE",
+        "AuthorizationType": "COGNITO_USER_POOLS",
+        "AuthorizerId": { "Ref": "CognitoAuthorizer" },
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PromptManagementLambda.Arn}/invocations"
+          },
+          "Credentials": {
+            "Fn::GetAtt": ["APIGatewayRole", "Arn"]
+          }
+        }
+      }
+    },
+    "ApiPromptTemplatesMethodOptions": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiPromptTemplatesResource" },
+        "HttpMethod": "OPTIONS",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "MOCK",
+          "IntegrationResponses": [
+            {
+              "StatusCode": 200,
+              "ResponseParameters": {
+                "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",
+                "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'",
+                "method.response.header.Access-Control-Allow-Origin": "'*'"
+              },
+              "ResponseTemplates": {
+                "application/json": ""
+              }
+            }
+          ],
+          "RequestTemplates": {
+            "application/json": "{\"statusCode\": 200}"
+          }
+        },
+        "MethodResponses": [
+          {
+            "StatusCode": 200,
+            "ResponseParameters": {
+              "method.response.header.Access-Control-Allow-Headers": true,
+              "method.response.header.Access-Control-Allow-Methods": true,
+              "method.response.header.Access-Control-Allow-Origin": true
+            }
+          }
+        ]
       }
     },
     "ApiFoldersGetMethod": {
@@ -1991,7 +2204,7 @@
     },
     "APIDeployment": {
       "Type": "AWS::ApiGateway::Deployment",
-      "DependsOn": ["JobMethod", "JobMethodOptions", "ApiJobMethod", "ApiListPdfsMethod", "ApiDefaultJobGetMethod", "ApiDefaultJobPostMethod", "ApiResultsMethod", "ApiResultsListMethod", "ApiResultsMethodOptions", "ApiResultsListMethodOptions", "ApiProxyMethod", "ApiFoldersGetMethod", "ApiFolderManagementPostMethod", "ApiS3PresignedUrlsGetMethod", "ApiTriggerProcessingPostMethod", "ApiHistoryMethodPost", "ApiHistoryMethodOptions"],
+      "DependsOn": ["JobMethod", "JobMethodOptions", "ApiJobMethod", "ApiListPdfsMethod", "ApiDefaultJobGetMethod", "ApiDefaultJobPostMethod", "ApiResultsMethod", "ApiResultsListMethod", "ApiResultsMethodOptions", "ApiResultsListMethodOptions", "ApiProxyMethod", "ApiFoldersGetMethod", "ApiFolderManagementPostMethod", "ApiS3PresignedUrlsGetMethod", "ApiTriggerProcessingPostMethod", "ApiHistoryMethodPost", "ApiHistoryMethodOptions", "ApiPromptTemplatesGetMethod", "ApiPromptTemplatesPostMethod", "ApiPromptTemplatesPutMethod", "ApiPromptTemplatesDeleteMethod", "ApiPromptTemplatesMethodOptions"],
       "Properties": {
         "RestApiId": {
           "Ref": "APIGateway"
@@ -2139,6 +2352,12 @@
         "Ref": "DynamoDBFolderConfigTable"
       },
       "Description": "DynamoDB folder configuration table name"
+    },
+    "DynamoDBPromptTemplatesTableName": {
+      "Value": {
+        "Ref": "DynamoDBPromptTemplatesTable"
+      },
+      "Description": "DynamoDB prompt templates table name"
     },
     "APIGatewayEndpoint": {
       "Value": {

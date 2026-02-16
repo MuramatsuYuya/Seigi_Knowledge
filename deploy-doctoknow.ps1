@@ -471,6 +471,33 @@ try {
         Write-Host "  ⚠ folder_management_lambda.py not found, skipping" -ForegroundColor Yellow
     }
     
+    # Prompt Management Lambda (新規追加)
+    Write-Host "  Processing Prompt Management Lambda..." -ForegroundColor Cyan
+    $promptMgmtZip = Join-Path $tempDir "prompt-management.zip"
+    $promptMgmtPy = Join-Path $backendDir "prompt_management_lambda.py"
+    
+    if (Test-Path $promptMgmtPy) {
+        # Create ZIP file for Prompt Management Lambda
+        $zip = [System.IO.Compression.ZipFile]::Open($promptMgmtZip, 'Create')
+        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $promptMgmtPy, "index.py")
+        $zip.Dispose()
+        
+        # Update Prompt Management Lambda
+        $promptMgmtFunctionName = "$projectName-prompt-management-v0"
+        aws lambda update-function-code `
+            --function-name $promptMgmtFunctionName `
+            --zip-file "fileb://$promptMgmtZip" `
+            --region $Region | Out-Null
+            
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  ✓ Prompt Management Lambda updated successfully" -ForegroundColor Green
+        } else {
+            Write-Host "  ✗ Failed to update Prompt Management Lambda" -ForegroundColor Red
+        }
+    } else {
+        Write-Host "  ⚠ prompt_management_lambda.py not found, skipping" -ForegroundColor Yellow
+    }
+    
     # Start Query Lambda (新規追加)
     Write-Host "  Processing Start Query Lambda..." -ForegroundColor Cyan
     $startQueryZip = Join-Path $tempDir "start-query.zip"
