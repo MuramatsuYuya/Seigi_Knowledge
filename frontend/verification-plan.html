@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>検証計画作成 - DoctorKnow</title>
+    <link rel="stylesheet" href="style.css">
+    
+    <script>
+        // Reserved for deployment script to inject API configuration
+        // Do not edit manually
+        window.API_CONFIG = window.API_CONFIG || {};
+    </script>
+    
+    <!-- AWS SDK for Cognito -->
+    <script src="https://sdk.amazonaws.com/js/aws-sdk-2.1000.0.min.js"></script>
+    
+    <!-- Authentication Guard -->
+    <script>
+        // 直接アクセスの場合、認証をチェック（トークンリフレッシュ対応）
+        (function() {
+            async function checkAuthentication() {
+                const accessToken = localStorage.getItem('cognito_access_token');
+                if (!accessToken) {
+                    // 認証されていない場合、index.htmlにリダイレクト
+                    console.warn('[verification-plan.html] Not authenticated. Redirecting to index.html');
+                    window.location.href = 'index.html';
+                    return false;
+                }
+                
+                // トークンの有効期限を確認
+                const expiresAt = localStorage.getItem('cognito_token_expires_at');
+                if (expiresAt) {
+                    const now = Date.now();
+                    const expiryTime = parseInt(expiresAt, 10);
+                    
+                    if (now >= expiryTime) {
+                        console.warn('[verification-plan.html] Token expired. Attempting refresh...');
+                        
+                        // リフレッシュトークンを試みる
+                        const refreshToken = localStorage.getItem('cognito_refresh_token');
+                        if (refreshToken) {
+                            try {
+                                // auth.jsのロードを待機してからリフレッシュ
+                                const authManager = await waitForAuthManager();
+                                
+                                if (authManager) {
+                                    const refreshResult = await authManager.refreshAccessToken();
+                                    if (refreshResult.success) {
+                                        console.log('[verification-plan.html] Token refreshed successfully, continuing...');
+                                        return true;
+                                    }
+                                }
+                            } catch (error) {
+                                console.error('[verification-plan.html] Token refresh failed:', error);
+                            }
+                        }
+                        
+                        // リフレッシュ失敗 → 期限切れトークンをクリアしてリダイレクト
+                        console.warn('[verification-plan.html] Token refresh failed. Redirecting to index.html');
+                        localStorage.removeItem('cognito_access_token');
+                        localStorage.removeItem('cognito_id_token');
+                        localStorage.removeItem('cognito_token_expires_at');
+                        window.location.href = 'index.html';
+                        return false;
+                    }
+                }
+                
+                return true;
+            }
+            
+            // AuthManagerのロードを待機（グローバル変数から取得）
+            function waitForAuthManager() {
+                return new Promise((resolve) => {
+                    if (window.verificationPlanAuthManager) {
+                        resolve(window.verificationPlanAuthManager);
+                        return;
+                    }
+                    
+                    const checkInterval = setInterval(() => {
+                        if (window.verificationPlanAuthManager) {
+                            clearInterval(checkInterval);
+                            resolve(window.verificationPlanAuthManager);
+                        }
+                    }, 100);
+                    
+                    // 最大5秒待機
+                    setTimeout(() => {
+                        clearInterval(checkInterval);
+                        resolve(null);
+                    }, 5000);
+                });
+            }
+            
+            // ページロード時にチェック（少し遅延させてauth.jsのロードを待つ）
+            setTimeout(() => {
+                checkAuthentication();
+            }, 500);
+        })();
+    </script>
+</head>
+<body>
+    <!-- Header Navigation -->
+    <header class="app-header">
+        <div class="header-content">
+            <h1 class="header-title">生技ナレッジAI</h1>
+            <nav class="header-nav">
+                <button class="btn-settings" id="openSettingsBtn" title="設定" style="display: none;">
+                    ⚙️
+                </button>
+                <button class="btn-search-target" id="openSearchTargetBtn">
+                    🎯 検索対象選択
+                </button>
+                <!-- Current Search Target Display -->
+                <div class="current-search-target">
+                    <div class="search-target-info">
+                        <span class="label">📁 検索対象:</span>
+                        <span id="currentFolderDisplay" class="folder-display">未選択</span>
+                    </div>
+                </div>
+                <button class="nav-tab" data-page="index">
+                    📄 技術資料のナレッジ化
+                </button>
+                <button class="nav-tab" data-page="knowledge-query">
+                    🔍 AI質問
+                </button>
+                <button class="nav-tab active" data-page="verification-plan">
+                    📋 検証計画
+                </button>
+                <button class="nav-tab" data-page="specification">
+                    📖 仕様書
+                </button>
+            </nav>
+        </div>
+    </header>
+    
+    <!-- Search Target Selection Modal -->
+    <div id="searchTargetModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>🎯 検索対象選択</h2>
+                <button class="modal-close" id="closeSearchTargetBtn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Folder Path Selection (Required) -->
+                <div class="form-section">
+                    <h3>📁 フォルダパス <span class="required-badge">必須</span></h3>
+                    <p class="section-description">検索するフォルダを選択してください（複数選択可）</p>
+                    
+                    <div id="folderTreeContainer" class="folder-tree-modal">
+                        <p class="placeholder-text">フォルダツリーを読み込み中...</p>
+                    </div>
+                    
+                    <div id="selectedFoldersDisplay" class="selected-folders">
+                        <strong>選択中のフォルダ:</strong>
+                        <div id="selectedFolderTags" class="folder-tags">
+                            <span class="no-selection">未選択</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Job ID Selection (Optional) -->
+                <div class="form-section">
+                    <h3>🔑 JOB_ID <span class="optional-badge">オプション</span></h3>
+                    <input 
+                        type="text" 
+                        id="jobIdInputModal" 
+                        class="form-control" 
+                        placeholder="特定のJOB_IDで検索する場合のみ入力"
+                    />
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="applySearchTargetBtn" class="btn btn-primary btn-large">適用</button>
+                <button id="cancelSearchTargetBtn" class="btn btn-secondary">キャンセル</button>
+            </div>
+        </div>
+    </div>
+    <div class="container">
+        <!-- Header will be added by header script -->
+        <div id="headerContainer"></div>
+
+        <!-- Main Content: Sidebar + Chat + PDF Viewer -->
+        <div class="knowledge-query-container">
+            <!-- Sidebar: Chat History -->
+            <aside class="history-sidebar collapsed" id="historySidebar">
+                <div class="sidebar-header">
+                    <h3>📋 履歴</h3>
+                    <!-- Sidebar Toggle Button (Inside header) -->
+                    <button class="sidebar-toggle-btn" id="sidebarToggleBtn" title="サイドバーを展開">＞</button>
+                </div>
+                
+                <!-- Sidebar Controls -->
+                <div class="sidebar-controls">
+                    <button id="refreshHistoryBtn" class="btn btn-small btn-refresh" title="履歴を更新">🔄 更新</button>
+                </div>
+                
+                <!-- Search Box -->
+                <div class="search-box">
+                    <input 
+                        type="text" 
+                        id="historySearchInput" 
+                        class="search-input" 
+                        placeholder="履歴を検索..."
+                    />
+                    <button id="historySearchBtn" class="btn btn-small btn-search">🔍</button>
+                </div>
+                
+                <!-- History List -->
+                <div id="historyList" class="history-list">
+                    <div class="empty-message">履歴がありません</div>
+                </div>
+            </aside>
+
+            <!-- Main Content: Chat + PDF -->
+            <div class="main-content">
+            <!-- Left Side: Chat -->
+            <div class="chat-section">
+                <h2>検証計画作成</h2>
+                
+                <div class="help-text" style="margin-bottom: 1rem; padding: 0.75rem; background: #e8f4f8; border-left: 4px solid #1976d2; border-radius: 4px;">
+                    <strong>💡 使い方:</strong> 設備や技術について入力してください。ナレッジベースを検索し、具体的な検証計画を作成します。
+                </div>
+                
+                <!-- Chat History -->
+                <div id="chatHistory" class="chat-history">
+                    <div class="chat-message system-message">
+                        <p>検索対象を上のボタンから選択してください。</p>
+                    </div>
+                </div>
+
+                <!-- Query Input Form -->
+                <div class="query-form">
+                    <textarea 
+                        id="queryInput" 
+                        class="query-input" 
+                        placeholder="検証したい設備や技術について入力してください... 例: 「新しいロボットアームの導入に向けた検証計画を立てたい」"
+                        rows="3"
+                        disabled
+                    ></textarea>
+                    <div class="button-group">
+                        <button id="submitQueryBtn" class="btn btn-primary">検証計画を作成</button>
+                        <button id="resetChatBtn" class="btn btn-secondary">会話をリセット</button>
+                    </div>
+                    <p id="queryStatus" class="status-message" style="display: none;"></p>
+                </div>
+            </div>
+
+            <!-- Resize Bar -->
+            <div class="resize-bar" title="ドラッグして幅を調整"></div>
+
+            <!-- Right Side: PDF Viewer -->
+            <div class="pdf-section">
+                <h2>資料</h2>
+                
+                <!-- PDF Selector -->
+                <div id="pdfSelectorContainer" class="pdf-selector" style="display: none;">
+                    <div class="pdf-nav">
+                        <button id="prevPdfBtn" class="btn btn-small">◀ 前へ</button>
+                        <span id="pdfIndicator" class="pdf-indicator"></span>
+                        <button id="nextPdfBtn" class="btn btn-small">次へ ▶</button>
+                    </div>
+                </div>
+
+                <!-- PDF Canvas Area -->
+                <div id="pdfViewerContainer" class="pdf-viewer"></div>
+
+                <!-- PDF Page Controls -->
+                <div id="pdfControls" class="pdf-controls" style="display: none;">
+                    <div class="page-controls">
+                        <button id="prevPageBtn" class="btn btn-small">前ページ</button>
+                        <span id="pageIndicator" class="page-indicator"></span>
+                        <button id="nextPageBtn" class="btn btn-small">次ページ</button>
+                    </div>
+                    <div class="zoom-controls">
+                        <button id="zoomInBtn" class="btn btn-small">🔍+</button>
+                        <button id="zoomOutBtn" class="btn btn-small">🔍-</button>
+                        <button id="resetZoomBtn" class="btn btn-small">リセット</button>
+                    </div>
+                </div>
+            </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application Scripts -->
+    <script src="config.js"></script>
+    <script src="auth.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        // Set PDF.js worker
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        
+        // Initialize auth manager for verification-plan page (lightweight, no UI)
+        let authManager = null;
+        if (window.API_CONFIG?.cognitoUserPoolId && window.API_CONFIG?.cognitoClientId) {
+            authManager = initializeAuthManager(
+                window.API_CONFIG.cognitoUserPoolId,
+                window.API_CONFIG.cognitoClientId,
+                window.API_CONFIG.region || 'ap-northeast-1'
+            );
+            
+            // Make it globally available for verification-plan.js
+            window.verificationPlanAuthManager = authManager;
+        } else {
+            console.warn('[verification-plan.html] Cognito config not available yet, will initialize later');
+        }
+    </script>
+    <script src="verification-plan.js"></script>
+    <script>
+        // Simple navigation for verification-plan.html page
+        document.querySelectorAll('.nav-tab').forEach(button => {
+            button.addEventListener('click', (e) => {
+                e.preventDefault();
+                const page = button.getAttribute('data-page');
+                if (page === 'index') {
+                    window.location.href = 'index.html';
+                } else if (page === 'knowledge-query') {
+                    window.location.href = 'knowledge-query.html';
+                } else if (page === 'verification-plan') {
+                    // Already on this page, do nothing
+                    console.log('Already on verification-plan page');
+                } else if (page === 'specification') {
+                    window.location.href = 'specification.html';
+                }
+            });
+        });
+    </script>
+</body>
+</html>

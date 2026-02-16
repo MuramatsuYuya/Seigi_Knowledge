@@ -1,0 +1,368 @@
+﻿<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>技術資料ナレッジ化</title>
+    <link rel="stylesheet" href="style.css">
+    
+    <!-- Runtime API Configuration
+         CloudFront オリジン設定で安全にAPI Gateway へアクセス
+         
+         セキュリティ:
+         - フロントエンドは /api/* (CloudFront プロキシ) を使用
+         - 実際の API Gateway URLは隠される
+         - deploy-doctoknow.ps1 が CloudFormation 出力から値を注入
+    -->
+    <script>
+        // Reserved for deployment script to inject API configuration
+        // Do not edit manually
+        window.API_CONFIG = window.API_CONFIG || {};
+    </script>
+    
+    <!-- AWS SDK for Cognito -->
+    <script src="https://sdk.amazonaws.com/js/aws-sdk-2.1000.0.min.js"></script>
+</head>
+<body>
+    <!-- Authentication Modal (shown before main app) -->
+    <div id="authModal" class="auth-modal">
+        <div class="auth-container">
+            <div class="auth-tabs">
+                <button class="auth-tab-btn active" data-tab="login">ログイン</button>
+                <button class="auth-tab-btn" data-tab="signup">新規登録</button>
+                <button class="auth-tab-btn" data-tab="confirm">メール確認</button>
+            </div>
+            
+            <!-- Login Tab -->
+            <div id="loginTab" class="auth-tab-content active">
+                <h2>ログイン</h2>
+                <form id="loginForm" class="auth-form">
+                    <div class="form-group">
+                        <label for="loginEmail">メールアドレス:</label>
+                        <input type="email" id="loginEmail" placeholder="情報システムIDのメールアドレス" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="loginPassword">パスワード:</label>
+                        <input type="password" id="loginPassword" placeholder="英字のみ6文字以上" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary" style="width: 100%;">ログイン</button>
+                    <p id="loginError" class="error-message"></p>
+                </form>
+            </div>
+            
+            <!-- Sign Up Tab -->
+            <div id="signupTab" class="auth-tab-content">
+                <h2>新規登録</h2>
+                <div class="auth-rules">
+                    <h4>📋 登録ルール</h4>
+                    <ul>
+                        <li>メールアドレス: <strong>情報システムID</strong> のメールアドレス</li>
+                        <li>パスワード: <strong>英字のみ</strong>で<strong>6文字以上</strong>
+                            <ul style="font-size: 0.9em; margin-top: 4px;">
+                                <li>✅ OK: abcdef, AbCdEf, ABCDEF, password</li>
+                                <li>❌ NG: 123456 (数字), Ab1234 (数字含む), abcde (5文字以下)</li>
+                            </ul>
+                        </li>
+                        <li>登録後、確認メールが送信されます</li>
+                    </ul>
+                </div>
+                <form id="signupForm" class="auth-form">
+                    <div class="form-group">
+                        <label for="signupEmail">メールアドレス:</label>
+                        <input type="email" id="signupEmail" placeholder="情報システムIDのメールアドレス" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="signupPassword">パスワード:</label>
+                        <input type="password" id="signupPassword" placeholder="英字のみ6文字以上" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="signupPasswordConfirm">パスワード（確認）:</label>
+                        <input type="password" id="signupPasswordConfirm" placeholder="パスワードを再入力" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary" style="width: 100%;">登録</button>
+                    <p id="signupError" class="error-message"></p>
+                    <p id="signupSuccess" class="success-message"></p>
+                </form>
+            </div>
+            
+            <!-- Confirm Tab -->
+            <div id="confirmTab" class="auth-tab-content">
+                <h2>メール確認</h2>
+                <p style="color: #666; margin-bottom: 16px;">
+                    登録時に送信された確認コードを入力してください
+                </p>
+                <form id="confirmForm" class="auth-form">
+                    <div class="form-group">
+                        <label for="confirmEmail">メールアドレス:</label>
+                        <input type="email" id="confirmEmail" placeholder="example@ad.melco.co.jp" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="confirmCode">確認コード:</label>
+                        <input type="text" id="confirmCode" placeholder="6桁のコードを入力" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary" style="width: 100%;">確認</button>
+                    <p id="confirmError" class="error-message"></p>
+                    <p id="confirmSuccess" class="success-message"></p>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Header Navigation (shown after auth) -->
+    <header class="app-header" id="appHeader" style="display: none;">
+        <div class="header-content">
+            <h1 class="header-title">生技ナレッジAI</h1>
+            <nav class="header-nav">
+                <span id="userEmailDisplay" style="color: #666; font-size: 0.85em; margin-right: 12px;"></span>
+                <button class="nav-tab active" data-page="pdf-processing">
+                    📄 技術資料のナレッジ化
+                </button>
+                <button class="nav-tab" data-page="knowledge-query">
+                    🔍 AI質問
+                </button>
+                <button class="nav-tab" data-page="verification-plan">
+                    📋 検証計画
+                </button>
+                <button class="nav-tab" data-page="specification">
+                    📖 仕様書
+                </button>
+                <button id="logoutBtn" class="btn btn-secondary btn-small">
+                    ログアウト
+                </button>
+            </nav>
+        </div>
+    </header>
+
+    <div class="container" id="mainContent" style="display: none;">
+        <!-- PDF Processing Page -->
+        <div id="pdf-processing-page" class="page-content active">
+            
+            <!-- Step 0: Folder & File Management Section -->
+            <div class="form-section folder-management-section">
+                <h2>📁 ステップ0: S3フォルダ・ファイル管理</h2>
+                <p style="color: #666; font-size: 0.9em;">S3バケットのPDF下のフォルダとファイルを管理します</p>
+                
+                <div class="management-grid">
+                    <!-- Left: Folder Tree Management -->
+                    <div class="management-left">
+                        <h3>📂 フォルダ操作</h3>
+                        <div class="form-group">
+                            <button id="fetchFolderTreeForMgmtBtn" class="btn btn-primary">フォルダツリーを取得</button>
+                            <p id="folderMgmtLoadingMsg" style="display:none; color: #d32f2f; margin-top: 12px; font-size: 14px;">📥 読み込み中...</p>
+                        </div>
+                        
+                        <div id="folderMgmtContainer" class="folder-tree-mgmt" style="display: none;">
+                            <!-- 動的に生成されるフォルダツリー -->
+                        </div>
+                    </div>
+                    
+                    <!-- Right: File Upload -->
+                    <div class="management-right">
+                        <h3>📤 ファイルアップロード</h3>
+                        <div id="fileUploadSection">
+                            <p id="selectedFolderForUpload" style="color: #666; margin-bottom: 12px;">
+                                左側のフォルダツリーから「ここにアップロード」ボタンをクリックしてフォルダを選択してください
+                            </p>
+                            <div id="fileInputContainer" style="display: none;">
+                                <p><strong>アップロード先:</strong> <span id="uploadTargetPath"></span></p>
+                                
+                                <div id="registeredFolderOptions" style="display: none; margin-bottom: 16px; padding: 12px; background: #e8f5e9; border-radius: 6px;">
+                                    <p style="margin: 0 0 8px 0; color: #2e7d32; font-weight: bold;">✓ このフォルダは登録済みです</p>
+                                    <label for="uploadProcessingMode" style="display: block; margin-bottom: 4px; font-weight: 500;">処理モード:</label>
+                                    <select id="uploadProcessingMode" style="width: 100%; padding: 8px; border: 1px solid #c8e6c9; border-radius: 4px; font-size: 14px;">
+                                        <option value="full">文字起こし＋構造化（通常）</option>
+                                        <option value="direct_pdf">PDFをそのまま登録</option>
+                                    </select>
+                                    <p style="color: #666; font-size: 0.8em; margin-top: 4px;">
+                                        ※ アップロード後、選択したモードで自動処理されます
+                                    </p>
+                                </div>
+                                
+                                <input type="file" id="fileInput" multiple accept=".pdf">
+                                <button id="uploadFilesBtn" class="btn btn-primary" style="margin-top: 8px;">
+                                    選択したファイルをアップロード
+                                </button>
+                                <div id="uploadProgress" style="display: none; margin-top: 12px;">
+                                    <p id="uploadStatus">アップロード中...</p>
+                                    <div class="progress-bar">
+                                        <div id="uploadProgressFill" class="progress-fill"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Folder Selection Section -->
+            <div class="form-section folder-selection-section">
+                <h2>📁 ステップ1: フォルダ選択</h2>
+                <p style="color: #666; font-size: 0.9em;">処理対象のフォルダを選択してください（リーフフォルダのみ選択可能）</p>
+                
+                <div class="form-group">
+                    <button id="fetchFolderTreeBtn" class="btn btn-primary">フォルダツリーを取得</button>
+                    <p id="folderLoadingMsg" style="display:none; color: #d32f2f; margin-top: 12px; font-size: 14px;">📥 読み込み中...</p>
+                </div>
+                
+                <div id="folderTreeContainer" class="folder-tree" style="display: none;">
+                    <!-- 動的に生成されるフォルダツリー -->
+                </div>
+                
+                <div id="selectedFolderInfo" style="display: none; margin-top: 12px; padding: 12px; background: #e3f2fd; border-radius: 6px;">
+                    <strong>✓ 選択中:</strong> <span id="selectedFolderPath" class="selected-path"></span>
+                </div>
+            </div>
+            
+            <!-- PDF Selection Section -->        
+            <div class="form-section pdf-selection-section disabled" id="pdfSelectionSection">
+                <h2>📄 ステップ2: PDF選択（オプション）</h2>
+                <p style="color: #666; font-size: 0.9em;">特定のファイルのみ処理する場合は選択してください。未選択の場合は全ファイルを処理します。</p>
+                
+                <div class="form-group">
+                    <button id="fetchPdfListBtn" class="btn btn-primary">PDF一覧を取得</button>
+                    <p id="pdfLoadingMsg" style="display:none; color: #d32f2f; margin-top: 12px; font-size: 14px;">📥 読み込み中...</p>
+                </div>
+                
+                <div id="pdfListContainer" style="border: 1px solid #e8e8e8; padding: 16px; margin: 16px 0; border-radius: 8px; max-height: 280px; overflow-y: auto; background: #fafafa; display: none;">
+                    <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                        <strong style="color: #2c3e50;">ファイル一覧:</strong>
+                        <div>
+                            <button id="selectAllBtn" class="btn btn-secondary btn-small">すべて選択</button>
+                            <button id="deselectAllBtn" class="btn btn-secondary btn-small">すべて解除</button>
+                        </div>
+                    </div>
+                    <ul id="pdfList" style="list-style: none; padding: 0; margin: 0;"></ul>
+                </div>
+            </div>
+            
+            <div class="form-section">
+                <h2>⚙️ ステップ3: 処理設定</h2>
+                
+                <div class="form-group">
+                    <label for="processingMode">処理モード:</label>
+                    <select id="processingMode" style="width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
+                        <option value="full">文字起こし＋構造化（通常）</option>
+                        <option value="direct_pdf">PDFをそのまま登録</option>
+                    </select>
+                    <p style="color: #666; font-size: 0.85em; margin-top: 6px;">
+                        ※ 「PDFをそのまま登録」を選択すると、文字起こしをスキップしてPDFファイルを直接ナレッジベースに登録します
+                    </p>
+                </div>
+                
+                <div class="form-group" id="transcriptPromptGroup">
+                    <label for="transcriptPrompt">文字起こし用プロンプト:</label>
+                    <textarea id="transcriptPrompt" placeholder="文字を起こす際のプロンプトを入力してください"></textarea>
+                </div>
+                
+                <div class="form-group" id="knowledgePromptGroup">
+                    <label for="knowledgePrompt">ナレッジベース生成プロンプト:</label>
+                    <textarea id="knowledgePrompt" placeholder="文字起こし結果からナレッジベースを生成するためのプロンプトを入力してください"></textarea>
+                </div>
+                
+                <div class="button-group">
+                    <button id="submitBtn" class="btn btn-primary">処理開始</button>
+                </div>
+            </div>
+            
+            <!-- Default Job ID Section (shown after job creation) -->
+            <div id="defaultJobIdSection" class="form-section default-jobid-section" style="display: none;">
+                <div class="success-banner">
+                    <h2>✅ ジョブ作成完了</h2>
+                    <p style="font-size: 1.1em;">JOB_ID: <strong id="createdJobId" style="color: #2196f3;"></strong></p>
+                    <div class="form-group">
+                        <button id="setAsDefaultJobIdBtn" class="btn btn-secondary">⚙️ デフォルトJOB_IDとして設定</button>
+                        <p id="defaultJobIdStatus" style="display: none; color: #4caf50; margin-top: 8px; font-size: 0.9em;">✓ デフォルトJOB_IDとして設定されました</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-section">
+                <h2>📋 過去の結果を確認する</h2>
+                <p style="color: #666; font-size: 0.9em;">上記「ステップ1」で選択したフォルダの結果を確認します</p>
+                
+                <div class="form-group">
+                    <label for="jobIdSelect">ジョブIDを選択:</label>
+                    <div style="display: flex; gap: 12px; align-items: center;">
+                        <select id="jobIdSelect" style="flex: 1; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
+                            <option value="">-- まずステップ1でフォルダを選択してください --</option>
+                        </select>
+                        <button id="refreshJobListBtn" class="btn btn-secondary btn-small">更新</button>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="jobId">または手動で入力:</label>
+                    <input type="text" id="jobId" placeholder="YYYYMMDDhhmmss形式を入力">
+                </div>
+                
+                <div class="button-group">
+                    <button id="loadJobBtn" class="btn btn-secondary">過去の結果を読み込み</button>
+                    <button id="reknowledgeBtn" class="btn btn-accent">ナレッジを作成</button>
+                </div>
+            </div>
+            
+            <div id="statusSection" class="status-section" style="display: none;">
+                <h2>処理状況</h2>
+                <div id="statusMessage"></div>
+                <div id="progressBar">
+                    <div id="progressFill"></div>
+                </div>
+            </div>
+            
+            <div class="results-section">
+                <h2>処理結果</h2>
+                
+                <div class="navigation">
+                    <button id="prevBtn" class="btn btn-secondary btn-small">← 前</button>
+                    <span id="currentPdfInfo">PDF: -</span>
+                    <button id="nextBtn" class="btn btn-secondary btn-small">次 →</button>
+                </div>
+                
+                <!-- Top section: PDF + Transcript side-by-side -->
+                <div class="results-container-top">
+                    <div class="result-pane">
+                        <h3>📄 資料</h3>
+                        <div id="pdfContainer" class="pdf-viewer">
+                            <p>- 元の資料が表示されます -</p>
+                        </div>
+                    </div>
+                    
+                    <div class="result-pane">
+                        <h3>📝 文字起こし結果</h3>
+                        <div id="transcriptResult" class="result-content">
+                            <p>- 結果がここに表示されます -</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Bottom section: Knowledge base full width -->
+                <div class="results-container-bottom">
+                    <div class="result-pane">
+                        <h3>🧠 ナレッジベース</h3>
+                        <div id="knowledgeResult" class="result-content">
+                            <p>- 結果がここに表示されます -</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- Default Job ID Section (shown after job creation) -->
+            <div id="defaultJobIdSection" class="form-section default-jobid-section" style="display: none;">
+                <div class="success-banner">
+                    <p style="font-size: 1.1em;">JOB_ID: <strong id="createdJobId" style="color: #2196f3;"></strong></p>
+                    <div class="form-group">
+                        <button id="setAsDefaultJobIdBtn" class="btn btn-secondary">⚙️ デフォルトJOB_IDとして設定</button>
+                        <p id="defaultJobIdStatus" style="display: none; color: #4caf50; margin-top: 8px; font-size: 0.9em;">✓ デフォルトJOB_IDとして設定されました</p>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+    
+    <!-- Application Scripts -->
+    <script src="config.js"></script>
+    <script src="auth.js"></script>
+    <script src="app.js"></script>
+    <script src="auth-ui.js"></script>
+</body>
+</html>

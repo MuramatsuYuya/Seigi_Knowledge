@@ -1,0 +1,166 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "AWS WAF Configuration for CloudFront - Must be deployed in us-east-1 region",
+  "Metadata": {
+    "AWS::CloudFormation::Init": {
+      "Description": "This template creates WAF resources for CloudFront IP-based access control"
+    }
+  },
+  "Parameters": {
+    "ProjectName": {
+      "Type": "String",
+      "Default": "doctoknow-dev",
+      "Description": "Project name"
+    },
+    "Environment": {
+      "Type": "String",
+      "Default": "dev",
+      "AllowedValues": ["dev", "prod"],
+      "Description": "Environment"
+    },
+    "AllowedIPAddresses": {
+      "Type": "CommaDelimitedList",
+      "Default": "192.218.140.236/32,192.218.140.237/32,192.218.140.238/32,192.218.140.239/32,192.218.140.240/32,192.218.140.241/32,10.166.0.0/16,10.166.96.135/32,10.166.1.99/32",
+      "Description": "Comma-separated list of allowed IP addresses in CIDR notation (e.g., 203.0.113.0/24,198.51.100.0/24)"
+    }
+  },
+  "Resources": {
+    "AllowedIPSet": {
+      "Type": "AWS::WAFv2::IPSet",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${ProjectName}-allowed-ips"
+        },
+        "Scope": "CLOUDFRONT",
+        "IPAddressVersion": "IPV4",
+        "Addresses": {
+          "Ref": "AllowedIPAddresses"
+        },
+        "Description": "IP addresses allowed to access the application",
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": {
+              "Ref": "ProjectName"
+            }
+          },
+          {
+            "Key": "Environment",
+            "Value": {
+              "Ref": "Environment"
+            }
+          }
+        ]
+      }
+    },
+    "WebACL": {
+      "Type": "AWS::WAFv2::WebACL",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${ProjectName}-web-acl"
+        },
+        "Scope": "CLOUDFRONT",
+        "DefaultAction": {
+          "Block": {}
+        },
+        "Description": "Web ACL for CloudFront distribution with IP-based access control",
+        "VisibilityConfig": {
+          "SampledRequestsEnabled": true,
+          "CloudWatchMetricsEnabled": true,
+          "MetricName": {
+            "Fn::Sub": "${ProjectName}-WebACL"
+          }
+        },
+        "Rules": [
+          {
+            "Name": "AllowSpecificIPs",
+            "Priority": 0,
+            "Action": {
+              "Allow": {}
+            },
+            "Statement": {
+              "IPSetReferenceStatement": {
+                "Arn": {
+                  "Fn::GetAtt": ["AllowedIPSet", "Arn"]
+                }
+              }
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${ProjectName}-AllowSpecificIPs"
+              }
+            }
+          },
+          {
+            "Name": "RateLimitRule",
+            "Priority": 1,
+            "Action": {
+              "Block": {}
+            },
+            "Statement": {
+              "RateBasedStatement": {
+                "Limit": 2000,
+                "AggregateKeyType": "IP",
+                "ScopeDownStatement": {
+                  "IPSetReferenceStatement": {
+                    "Arn": {
+                      "Fn::GetAtt": ["AllowedIPSet", "Arn"]
+                    }
+                  }
+                }
+              }
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${ProjectName}-RateLimit"
+              }
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": {
+              "Ref": "ProjectName"
+            }
+          },
+          {
+            "Key": "Environment",
+            "Value": {
+              "Ref": "Environment"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "WebACLArn": {
+      "Value": {
+        "Fn::GetAtt": ["WebACL", "Arn"]
+      },
+      "Description": "WAF Web ACL ARN - Use this in the main CloudFormation template",
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${ProjectName}-WebACLArn"
+        }
+      }
+    },
+    "WebACLId": {
+      "Value": {
+        "Fn::GetAtt": ["WebACL", "Id"]
+      },
+      "Description": "WAF Web ACL ID"
+    },
+    "AllowedIPSetArn": {
+      "Value": {
+        "Fn::GetAtt": ["AllowedIPSet", "Arn"]
+      },
+      "Description": "IP Set ARN for allowed IPs - Update this to modify allowed IP addresses"
+    }
+  }
+}

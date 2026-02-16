@@ -1,0 +1,31 @@
+https://docs.aws.amazon.com/bedrock/latest/userguide/kb-test-config.html?utm_source=chatgpt.com
+によると、filter フィールドは “Tagged Union” 形式であり、一度に１つのトップレベル・キーのみを指定できます。 
+
+
+トップレベルで指定可能なキーとして、次が挙げられています：
+
+equals — 指定したキーの値が一致する場合
+
+notEquals — 指定したキーの値が一致しない場合
+
+greaterThan — 数値型のキーが指定値より大きい場合
+
+greaterThanOrEquals — 数値型のキーが指定値以上の場合
+
+lessThan — 数値型のキーが指定値より小さい場合
+
+lessThanOrEquals — 数値型のキーが指定値以下の場合
+
+in — 文字列リスト型のキーがリスト内の値を含む場合
+
+notIn — 文字列リスト型のキーがリスト内の値を含まない場合
+
+startsWith — 文字列キーの値が指定プレフィックスで始まる場合
+
+stringContains — 文字列キーの値が「指定文字列を含む」場合
+
+listContains — リスト型キーが指定値を含む場合
+
+andAll — 複数のフィルター条件を “AND” で組み合わせる
+
+orAll — 複数のフィルター条件を “OR” で組み合わせる

@@ -1,0 +1,118 @@
+
+### ■ 基本設定
+
+* **knowledgeBaseId**（必須）：QBRNP5FY8E
+* **modelArn**（必須）：arn:aws:bedrock:us-west-2:722631436454:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0
+
+---
+
+### ■ generationConfiguration（生成設定）
+
+#### ● inferenceConfig.textInferenceConfig
+
+* **maxTokens**（任意）／応答の最大トークン数
+
+  * 例：`512`
+  * 値を大きく→長い回答、小さく→短い回答
+* **temperature**（任意）／サンプリング温度（出力の多様性）
+
+  * 例：`0.7`
+  * 高→創造的、低→安定的
+* **topP**（任意）／Nucleus サンプリング閾値
+
+  * 例：`0.9`
+  * 値を下げると保守的、上げると多様性増
+* **stopSequences**（任意）／出力を停止させる文字列リスト
+
+  * 例：`["\n\nHuman:", "Q:"]`
+  * 指定文字列が出力に現れると生成が強制終了
+
+#### ● promptTemplate
+
+* **textPromptTemplate**（任意）／応答生成用のプロンプトテンプレート
+
+  * 例：`"Answer using the context: {{retrieved}}\nQ: {{input}}"`
+  * 変更すると：検索結果の埋め込み方や応答形式を柔軟に変更
+
+#### ● guardrailConfiguration
+
+* **guardrailId**（任意）／適用する Guardrail のID
+
+  * 例：`"gr-1234567890"`
+  * 変更すると：不適切コンテンツや禁止カテゴリの検出・遮断が有効化
+* **guardrailVersion**（任意）／Guardrail のバージョン
+
+  * 例：`"1"`
+  * 変更すると：ガードルールの適用内容が更新
+
+#### ● performanceConfig
+
+* **latency**（任意）／レイテンシ優先度 ("STANDARD"/"LOW_LATENCY")
+
+  * 例：`"STANDARD"`
+  * 低レイテンシを選ぶと応答速度優先、標準だと品質優先
+
+#### ● additionalModelRequestFields
+
+* **任意キー/値**（任意）／モデル特有の追加設定を渡せる拡張フィールド
+
+  * 例：`{ "customField": "value" }`
+  * 変更すると：特定モデル向けに追加オプションを渡すことが可能
+
+---
+
+### ■ orchestrationConfiguration（オーケストレーション設定）
+
+* **queryTransformationConfiguration.type**（任意）／クエリ変換方法 ("QUERY_SUMMARIZATION", "NONE")
+
+  * 例：`"QUERY_SUMMARIZATION"`
+  * 変更すると：長い質問を要約し、検索精度を高められる
+* **promptTemplate.textPromptTemplate**（任意）／応答のプロンプトテンプレート
+
+  * 例：`"Use the following sources:\n{{retrieved}}\nQ: {{input}}"`
+  * 変更すると：出力スタイルをカスタマイズできる
+* **inferenceConfig / performanceConfig / additionalModelRequestFields**（任意）／generationConfigurationと同様
+
+  * 意味／効果：上記「生成設定」と同様
+
+---
+
+### ■ retrievalConfiguration（検索設定）
+
+#### ● vectorSearchConfiguration
+
+* **numberOfResults**（任意）／10
+* **overrideSearchType**（任意）／検索タイプ ("SEMANTIC", "HYBRID")
+
+  * 例：`"HYBRID"`
+  * HYBRIDにするとBM25＋ベクトル検索の組合せになる
+* **filter**（任意）／メタデータ条件による絞り込み
+x-amz-bedrock-kb-source-uri　が以下の条件にあてはまるものからの検索にしたい
+s3://doctoknow-seigi25-data/Knowledge/{ジョブID}/*
+
+* **implicitFilterConfiguration**（任意）／モデルによる自動フィルタ
+
+  * 例：
+
+    ```json
+    {
+      "metadataAttributes": [ { "key": "lang", "type": "STRING" } ],
+      "modelArn": "arn:..."
+    }
+    ```
+  * 変更すると：クエリ内容から関連するフィルタを自動で推測
+
+#### ● rerankingConfiguration
+
+* **type**（任意）／再ランキング方式
+
+  * 例：`"BEDROCK_RERANKING"`
+  * 有効にすると検索結果をモデルで再順位付け
+* **bedrockRerankingConfiguration.modelConfiguration**（任意）／再ランキングに使うモデル設定
+
+  * 例：`{ "modelArn": "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-reranker-v1" }`
+  * 選んだモデルで候補を再評価し、精度を改善
+* **bedrockRerankingConfiguration.numberOfRerankedResults**（任意）／再ランキング後の上位件数
+
+  * 例：`3`
+  * 上位 n 件だけを最終候補として利用

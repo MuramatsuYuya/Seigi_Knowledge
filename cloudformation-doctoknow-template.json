@@ -1,0 +1,2194 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "PDF OCR and Knowledge Base Generation System - CloudFormation Template (Secure Version with Enhanced Security Controls)",
+  "Metadata": {
+    "AWS::CloudFormation::Init": {
+      "Description": "This template creates a complete PDF OCR system with CloudFront as a reverse proxy"
+    }
+  },
+  "Parameters": {
+    "ProjectName": {
+      "Type": "String",
+      "Default": "doctoknow-dev2",
+      "Description": "Project name"
+    },
+    "Environment": {
+      "Type": "String",
+      "Default": "dev",
+      "AllowedValues": ["dev", "prod"],
+      "Description": "Environment"
+    },
+    "FrontendS3BucketName": {
+      "Type": "String",
+      "Default": "doctoknow-frontend",
+      "Description": "S3 bucket name for frontend (static files)"
+    },
+    "DataS3BucketNameParam": {
+      "Type": "String",
+      "Default": "doctoknow-data",
+      "Description": "S3 bucket name for backend data (PDF, results)"
+    },
+    "WebACLArn": {
+      "Type": "String",
+      "Default": "",
+      "Description": "WAF Web ACL ARN from us-east-1 WAF stack (optional). Leave empty to deploy without WAF."
+    },
+    "BedrockAgentId": {
+      "Type": "String",
+      "Default": "M89ZN5FKB4",
+      "Description": "Default Bedrock Agent ID for AI質問"
+    },
+    "BedrockAgentAliasId": {
+      "Type": "String",
+      "Default": "HZHJZIHUHR",
+      "Description": "Default Bedrock Agent Alias ID"
+    },
+    "VerificationAgentId": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Bedrock Agent ID for 検証計画作成 (leave empty to use default agent)"
+    },
+    "VerificationAgentAliasId": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Bedrock Agent Alias ID for 検証計画作成"
+    },
+    "SpecificationAgentId": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Bedrock Agent ID for 仕様書作成 (leave empty to use default agent)"
+    },
+    "SpecificationAgentAliasId": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Bedrock Agent Alias ID for 仕様書作成"
+    }
+  },
+  "Resources": {
+    "FrontendS3Bucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketName": {
+          "Fn::Sub": "${FrontendS3BucketName}"
+        },
+        "VersioningConfiguration": {
+          "Status": "Enabled"
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": false,
+          "BlockPublicPolicy": false,
+          "IgnorePublicAcls": false,
+          "RestrictPublicBuckets": false
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": {
+              "Ref": "ProjectName"
+            }
+          },
+          {
+            "Key": "Type",
+            "Value": "Frontend"
+          },
+          {
+            "Key": "Environment",
+            "Value": {
+              "Ref": "Environment"
+            }
+          }
+        ]
+      }
+    },
+    "FrontendS3BucketPolicy": {
+      "Type": "AWS::S3::BucketPolicy",
+      "Properties": {
+        "Bucket": {
+          "Ref": "FrontendS3Bucket"
+        },
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowCloudFrontOACAccess",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudfront.amazonaws.com"
+              },
+              "Action": "s3:GetObject",
+              "Resource": {
+                "Fn::Sub": "${FrontendS3Bucket.Arn}/*"
+              },
+              "Condition": {
+                "StringEquals": {
+                  "AWS:SourceArn": {
+                    "Fn::Sub": "arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFront.Id}"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "S3Bucket": {
+      "Type": "AWS::S3::Bucket",
+      "DeletionPolicy": "Retain",
+      "Properties": {
+        "BucketName": {
+          "Fn::Sub": "${DataS3BucketNameParam}"
+        },
+        "VersioningConfiguration": {
+          "Status": "Enabled"
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "CorsConfiguration": {
+          "CorsRules": [
+            {
+              "AllowedOrigins": [
+                "*"
+              ],
+              "AllowedMethods": [
+                "PUT",
+                "POST",
+                "GET",
+                "HEAD"
+              ],
+              "AllowedHeaders": [
+                "*"
+              ],
+              "ExposedHeaders": [
+                "ETag",
+                "x-amz-server-side-encryption",
+                "x-amz-request-id",
+                "x-amz-id-2"
+              ],
+              "MaxAge": 3600
+            }
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": {
+              "Ref": "ProjectName"
+            }
+          },
+          {
+            "Key": "Type",
+            "Value": "Backend"
+          },
+          {
+            "Key": "Environment",
+            "Value": {
+              "Ref": "Environment"
+            }
+          }
+        ]
+      }
+    },
+    "DynamoDBJobTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "TableName": {
+          "Fn::Sub": "${ProjectName}-jobs-v2"
+        },
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "job_id",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "folder_path#file_name",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "folder_path",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "job_id",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "folder_path#file_name",
+            "KeyType": "RANGE"
+          }
+        ],
+        "GlobalSecondaryIndexes": [
+          {
+            "IndexName": "folder_path-index",
+            "KeySchema": [
+              {
+                "AttributeName": "folder_path",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "job_id",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            }
+          }
+        ],
+        "BillingMode": "PAY_PER_REQUEST"
+      }
+    },
+    "DynamoDBChatHistoryTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "TableName": {
+          "Fn::Sub": "${ProjectName}-knowledge-chat-history"
+        },
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "job_id",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "message_id",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "chat_session_id",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "job_id",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "message_id",
+            "KeyType": "RANGE"
+          }
+        ],
+        "GlobalSecondaryIndexes": [
+          {
+            "IndexName": "chat_session_id-index",
+            "KeySchema": [
+              {
+                "AttributeName": "chat_session_id",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "message_id",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            }
+          }
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+        "TimeToLiveSpecification": {
+          "AttributeName": "ttl",
+          "Enabled": true
+        }
+      }
+    },
+    "DynamoDBQueryStatusTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "TableName": {
+          "Fn::Sub": "${ProjectName}-query-status"
+        },
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "query_id",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "query_id",
+            "KeyType": "HASH"
+          }
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+        "TimeToLiveSpecification": {
+          "AttributeName": "ttl",
+          "Enabled": true
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "Query Status Table"
+          },
+          {
+            "Key": "Description",
+            "Value": "Temporary storage for async knowledge query status with TTL auto-deletion"
+          }
+        ]
+      }
+    },
+    "DynamoDBFolderConfigTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "TableName": {
+          "Fn::Sub": "${ProjectName}-folder-config"
+        },
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "folder_path",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "folder_path",
+            "KeyType": "HASH"
+          }
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "Folder Configuration Table"
+          },
+          {
+            "Key": "Description",
+            "Value": "Stores folder paths and their default job IDs"
+          }
+        ]
+      }
+    },
+    "PDFProcessingStateMachine": {
+      "Type": "AWS::StepFunctions::StateMachine",
+      "Properties": {
+        "StateMachineName": {
+          "Fn::Sub": "${ProjectName}-pdf-processing"
+        },
+        "RoleArn": {
+          "Fn::GetAtt": ["StepFunctionsExecutionRole", "Arn"]
+        },
+        "DefinitionString": {
+          "Fn::Sub": [
+            "{\"Comment\":\"PDF Batch Processing with Knowledge Base Sync\",\"StartAt\":\"ProcessFiles\",\"States\":{\"ProcessFiles\":{\"Type\":\"Map\",\"ItemsPath\":\"$.files\",\"MaxConcurrency\":2,\"Iterator\":{\"StartAt\":\"CheckIfLastFile\",\"States\":{\"CheckIfLastFile\":{\"Type\":\"Choice\",\"Choices\":[{\"Variable\":\"$.trigger_kb_sync\",\"BooleanEquals\":true,\"Next\":\"ProcessWorkerThenSync\"}],\"Default\":\"ProcessWorker\"},\"ProcessWorker\":{\"Type\":\"Task\",\"Resource\":\"${WorkerLambdaArn}\",\"Retry\":[{\"ErrorEquals\":[\"States.TaskFailed\",\"ThrottlingException\"],\"IntervalSeconds\":2,\"MaxAttempts\":5,\"BackoffRate\":2.0}],\"Catch\":[{\"ErrorEquals\":[\"States.ALL\"],\"ResultPath\":\"$.error\",\"Next\":\"RecordFailure\"}],\"End\":true},\"ProcessWorkerThenSync\":{\"Type\":\"Task\",\"Resource\":\"${WorkerLambdaArn}\",\"Retry\":[{\"ErrorEquals\":[\"States.TaskFailed\",\"ThrottlingException\"],\"IntervalSeconds\":2,\"MaxAttempts\":5,\"BackoffRate\":2.0}],\"Catch\":[{\"ErrorEquals\":[\"States.ALL\"],\"ResultPath\":\"$.error\",\"Next\":\"RecordFailure\"}],\"Next\":\"TriggerKBSync\"},\"TriggerKBSync\":{\"Type\":\"Task\",\"Resource\":\"${BedrockKBSyncLambdaArn}\",\"Retry\":[{\"ErrorEquals\":[\"States.TaskFailed\",\"ThrottlingException\"],\"IntervalSeconds\":5,\"MaxAttempts\":3,\"BackoffRate\":2.0}],\"Catch\":[{\"ErrorEquals\":[\"States.ALL\"],\"ResultPath\":\"$.kb_sync_error\",\"Next\":\"RecordKBSyncFailure\"}],\"End\":true},\"RecordFailure\":{\"Type\":\"Pass\",\"Result\":\"Worker Failed\",\"End\":true},\"RecordKBSyncFailure\":{\"Type\":\"Pass\",\"Result\":\"KB Sync Failed but Worker Succeeded\",\"End\":true}}},\"ResultPath\":\"$.results\",\"End\":true}}}",
+            {
+              "WorkerLambdaArn": {
+                "Fn::GetAtt": ["WorkerLambda", "Arn"]
+              },
+              "BedrockKBSyncLambdaArn": {
+                "Fn::GetAtt": ["BedrockKBSyncLambda", "Arn"]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "LambdaExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        ],
+        "Policies": [
+          {
+            "PolicyName": "S3Access",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:GetObject",
+                    "s3:PutObject",
+                    "s3:DeleteObject",
+                    "s3:ListBucket"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": ["S3Bucket", "Arn"]
+                    },
+                    {
+                      "Fn::Sub": "${S3Bucket.Arn}/*"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "PolicyName": "DynamoDBAccess",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:PutItem",
+                    "dynamodb:GetItem",
+                    "dynamodb:UpdateItem",
+                    "dynamodb:Query",
+                    "dynamodb:Scan"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": ["DynamoDBJobTable", "Arn"]
+                    },
+                    {
+                      "Fn::Sub": "${DynamoDBJobTable.Arn}/index/*"
+                    },
+                    {
+                      "Fn::GetAtt": ["DynamoDBChatHistoryTable", "Arn"]
+                    },
+                    {
+                      "Fn::Sub": "${DynamoDBChatHistoryTable.Arn}/index/*"
+                    },
+                    {
+                      "Fn::GetAtt": ["DynamoDBFolderConfigTable", "Arn"]
+                    },
+                    {
+                      "Fn::GetAtt": ["DynamoDBQueryStatusTable", "Arn"]
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "PolicyName": "BedrockAccess",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "bedrock:InvokeModel",
+                    "bedrock:InvokeModelWithResponseStream",
+                    "bedrock:GetInferenceProfile"
+                  ],
+                  "Resource": [
+                    "*"
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "bedrock:RetrieveAndGenerate",
+                    "bedrock:Retrieve",
+                    "bedrock:Rerank"
+                  ],
+                  "Resource": [
+                    "*"
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "aws-marketplace:ViewSubscriptions",
+                    "aws-marketplace:Subscribe"
+                  ],
+                  "Resource": [
+                    "*"
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "bedrock:InvokeAgent"
+                  ],
+                  "Resource": [
+                    "*"
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "bedrock:StartIngestionJob",
+                    "bedrock:GetIngestionJob"
+                  ],
+                  "Resource": [
+                    "*"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "PolicyName": "StepFunctionsAccess",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "states:StartExecution",
+                    "states:DescribeExecution",
+                    "states:GetExecutionHistory"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${ProjectName}-pdf-processing"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "PolicyName": "LambdaInvokeAccess",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "lambda:InvokeFunction"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProjectName}-worker-v0"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProjectName}-worker-v0:*"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProjectName}-knowledge-querier-v0"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProjectName}-knowledge-querier-v0:*"
+                    }
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "states:StartExecution"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${ProjectName}-pdf-processing-v0"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "StepFunctionsExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "states.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "InvokeLambda",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "lambda:InvokeFunction"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProjectName}-worker-v0"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProjectName}-bedrock-kb-sync-v0"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "APIGatewayRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "apigateway.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "InvokeLambda",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "lambda:InvokeFunction",
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": ["JobCreatorLambda", "Arn"]
+                    },
+                    {
+                      "Fn::GetAtt": ["ResultFetcherLambda", "Arn"]
+                    },
+                    {
+                      "Fn::GetAtt": ["KnowledgeQuerierLambda", "Arn"]
+                    },
+                    {
+                      "Fn::GetAtt": ["HistoryManagerLambda", "Arn"]
+                    },
+                    {
+                      "Fn::GetAtt": ["FolderManagementLambda", "Arn"]
+                    },
+                    {
+                      "Fn::GetAtt": ["StartQueryLambda", "Arn"]
+                    },
+                    {
+                      "Fn::GetAtt": ["PollStatusLambda", "Arn"]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "JobCreatorLambda": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectName}-job-creator-v0"
+        },
+        "Runtime": "python3.12",
+        "Handler": "index.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": ["LambdaExecutionRole", "Arn"]
+        },
+        "Timeout": 60,
+        "MemorySize": 512,
+        "Environment": {
+          "Variables": {
+            "DYNAMODB_TABLE": {
+              "Ref": "DynamoDBJobTable"
+            },
+            "DYNAMODB_FOLDER_CONFIG_TABLE": {
+              "Ref": "DynamoDBFolderConfigTable"
+            },
+            "S3_BUCKET": {
+              "Ref": "S3Bucket"
+            },
+            "STATE_MACHINE_ARN": {
+              "Ref": "PDFProcessingStateMachine"
+            }
+          }
+        },
+        "Code": {
+          "ZipFile": "import json\nprint('JobCreator Lambda Placeholder')\n"
+        }
+      }
+    },
+    "WorkerLambda": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectName}-worker-v0"
+        },
+        "Runtime": "python3.12",
+        "Handler": "index.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": ["LambdaExecutionRole", "Arn"]
+        },
+        "Timeout": 900,
+        "MemorySize": 3008,
+        "Environment": {
+          "Variables": {
+            "DYNAMODB_TABLE": {
+              "Ref": "DynamoDBJobTable"
+            },
+            "DYNAMODB_FOLDER_CONFIG_TABLE": {
+              "Ref": "DynamoDBFolderConfigTable"
+            },
+            "S3_BUCKET": {
+              "Ref": "S3Bucket"
+            },
+            "BEDROCK_MODEL_ID": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "BEDROCK_MAX_TOKENS": "40000"
+          }
+        },
+        "Code": {
+          "ZipFile": "import json\nprint('Worker Lambda Placeholder')\n"
+        }
+      }
+    },
+    "ResultFetcherLambda": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectName}-result-fetcher-v0"
+        },
+        "Runtime": "python3.12",
+        "Handler": "index.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": ["LambdaExecutionRole", "Arn"]
+        },
+        "Timeout": 30,
+        "Environment": {
+          "Variables": {
+            "DYNAMODB_TABLE": {
+              "Ref": "DynamoDBJobTable"
+            },
+            "DYNAMODB_FOLDER_CONFIG_TABLE": {
+              "Ref": "DynamoDBFolderConfigTable"
+            },
+            "S3_BUCKET": {
+              "Ref": "S3Bucket"
+            }
+          }
+        },
+        "Code": {
+          "ZipFile": "import json\nprint('ResultFetcher Lambda Placeholder')\n"
+        }
+      }
+    },
+    "KnowledgeQuerierLambda": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectName}-knowledge-querier-v0"
+        },
+        "Runtime": "python3.12",
+        "Handler": "index.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": ["LambdaExecutionRole", "Arn"]
+        },
+        "Timeout": 60,
+        "MemorySize": 1024,
+        "Environment": {
+          "Variables": {
+            "DYNAMODB_TABLE": {
+              "Ref": "DynamoDBJobTable"
+            },
+            "DYNAMODB_CHAT_HISTORY_TABLE": {
+              "Ref": "DynamoDBChatHistoryTable"
+            },
+            "DYNAMODB_FOLDER_CONFIG_TABLE": {
+              "Ref": "DynamoDBFolderConfigTable"
+            },
+            "QUERY_STATUS_TABLE": {
+              "Ref": "DynamoDBQueryStatusTable"
+            },
+            "S3_BUCKET": {
+              "Ref": "S3Bucket"
+            },
+            "KNOWLEDGE_BASE_ID": "QBRNP5FY8E",
+            "DATA_SOURCE_ID": "DE8SIWPN5R",
+            "BEDROCK_MODEL_ARN": "arn:aws:bedrock:us-west-2:722631436454:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "BEDROCK_AGENT_ID": {
+              "Ref": "BedrockAgentId"
+            },
+            "BEDROCK_AGENT_ALIAS_ID": {
+              "Ref": "BedrockAgentAliasId"
+            },
+            "VERIFICATION_AGENT_ID": {
+              "Ref": "VerificationAgentId"
+            },
+            "VERIFICATION_AGENT_ALIAS_ID": {
+              "Ref": "VerificationAgentAliasId"
+            },
+            "SPECIFICATION_AGENT_ID": {
+              "Ref": "SpecificationAgentId"
+            },
+            "SPECIFICATION_AGENT_ALIAS_ID": {
+              "Ref": "SpecificationAgentAliasId"
+            },
+            "JOBID": "20251031191517",
+            "MAX_CONTEXT_LENGTH": "10000"
+          }
+        },
+        "Code": {
+          "ZipFile": "def lambda_handler(event, context):\n    return {'statusCode': 200, 'body': 'Dummy - will be updated by deployment script'}\n"
+        }
+      }
+    },
+    "AgentKBActionLambda": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectName}-agent-kb-action-v0"
+        },
+        "Runtime": "python3.12",
+        "Handler": "index.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": ["LambdaExecutionRole", "Arn"]
+        },
+        "Timeout": 60,
+        "MemorySize": 1024,
+        "Environment": {
+          "Variables": {
+            "S3_BUCKET": {
+              "Ref": "S3Bucket"
+            },
+            "KNOWLEDGE_BASE_ID": "QBRNP5FY8E",
+            "BEDROCK_MODEL_ARN": "arn:aws:bedrock:us-west-2:722631436454:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+          }
+        },
+        "Code": {
+          "ZipFile": "def lambda_handler(event, context):\n    return {'statusCode': 200, 'body': 'Agent KB Action - will be updated by deployment script'}\n"
+        }
+      }
+    },
+    "StartQueryLambda": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectName}-start-query-v0"
+        },
+        "Runtime": "python3.12",
+        "Handler": "index.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": ["LambdaExecutionRole", "Arn"]
+        },
+        "Timeout": 10,
+        "MemorySize": 256,
+        "Environment": {
+          "Variables": {
+            "QUERY_STATUS_TABLE": {
+              "Ref": "DynamoDBQueryStatusTable"
+            },
+            "KNOWLEDGE_QUERIER_LAMBDA_ARN": {
+              "Fn::GetAtt": ["KnowledgeQuerierLambda", "Arn"]
+            }
+          }
+        },
+        "Code": {
+          "ZipFile": "import json\nprint('StartQuery Lambda Placeholder')\n"
+        }
+      }
+    },
+    "PollStatusLambda": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectName}-poll-status-v0"
+        },
+        "Runtime": "python3.12",
+        "Handler": "index.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": ["LambdaExecutionRole", "Arn"]
+        },
+        "Timeout": 5,
+        "MemorySize": 128,
+        "Environment": {
+          "Variables": {
+            "QUERY_STATUS_TABLE": {
+              "Ref": "DynamoDBQueryStatusTable"
+            }
+          }
+        },
+        "Code": {
+          "ZipFile": "import json\nprint('PollStatus Lambda Placeholder')\n"
+        }
+      }
+    },
+    "AgentKBActionLambdaPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "AgentKBActionLambda"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "bedrock.amazonaws.com",
+        "SourceArn": "arn:aws:bedrock:us-west-2:722631436454:agent/M89ZN5FKB4"
+      }
+    },
+    "AgentKBActionLambdaVerificationPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "AgentKBActionLambda"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "bedrock.amazonaws.com",
+        "SourceArn": "arn:aws:bedrock:us-west-2:722631436454:agent/*"
+      }
+    },
+    "AgentKBActionLambdaSpecificationPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "AgentKBActionLambda"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "bedrock.amazonaws.com",
+        "SourceArn": "arn:aws:bedrock:us-west-2:722631436454:agent/*"
+      }
+    },
+    "APIGateway": {
+      "Type": "AWS::ApiGateway::RestApi",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${ProjectName}-api"
+        },
+        "Description": "API for PDF OCR system"
+      }
+    },
+    "JobResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "APIGateway"
+        },
+        "ParentId": {
+          "Fn::GetAtt": ["APIGateway", "RootResourceId"]
+        },
+        "PathPart": "job"
+      }
+    },
+    "ApiRootResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Fn::GetAtt": [ "APIGateway", "RootResourceId" ] },
+        "PathPart": "api"
+      }
+    },
+    "ApiJobResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Ref": "ApiRootResource" },
+        "PathPart": "job"
+      }
+    },
+    "ApiReknowledgeResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Ref": "ApiRootResource" },
+        "PathPart": "reknowledge"
+      }
+    },
+    "ApiListPdfsResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Ref": "ApiRootResource" },
+        "PathPart": "list-pdfs"
+      }
+    },
+    "ApiResultsResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Ref": "ApiRootResource" },
+        "PathPart": "results"
+      }
+    },
+    "ApiResultsJobIdResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Ref": "ApiResultsResource" },
+        "PathPart": "{job_id}"
+      }
+    },
+    "ApiKnowledgeQueryResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Ref": "ApiRootResource" },
+        "PathPart": "knowledge-query"
+      }
+    },
+    "ApiKnowledgeQueryStartResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Ref": "ApiKnowledgeQueryResource" },
+        "PathPart": "start"
+      }
+    },
+    "ApiKnowledgeQueryStatusResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Ref": "ApiKnowledgeQueryResource" },
+        "PathPart": "status"
+      }
+    },
+    "ApiKnowledgeQueryStatusQueryIdResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Ref": "ApiKnowledgeQueryStatusResource" },
+        "PathPart": "{query_id}"
+      }
+    },
+    "ApiHistoryResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Ref": "ApiRootResource" },
+        "PathPart": "history"
+      }
+    },
+    "ApiDefaultJobResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Ref": "ApiRootResource" },
+        "PathPart": "default-job"
+      }
+    },
+    "ApiFoldersResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Ref": "ApiRootResource" },
+        "PathPart": "folders"
+      }
+    },
+    "ApiFolderManagementResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Ref": "ApiRootResource" },
+        "PathPart": "folder-management"
+      }
+    },
+    "ApiS3PresignedUrlsResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Ref": "ApiRootResource" },
+        "PathPart": "s3-presigned-urls"
+      }
+    },
+    "ApiTriggerProcessingResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Ref": "ApiRootResource" },
+        "PathPart": "trigger-processing"
+      }
+    },
+    "ApiProxyResource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ParentId": { "Ref": "ApiRootResource" },
+        "PathPart": "{proxy+}"
+      }
+    },
+    "JobMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "APIGateway"
+        },
+        "ResourceId": {
+          "Ref": "JobResource"
+        },
+        "HttpMethod": "POST",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${JobCreatorLambda.Arn}/invocations"
+          },
+          "Credentials": {
+            "Fn::GetAtt": ["APIGatewayRole", "Arn"]
+          }
+        }
+      }
+    },
+    "JobCreatorLambdaPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": { "Ref": "JobCreatorLambda" },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/*/*"
+        }
+      }
+    },
+    "ResultFetcherLambdaPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": { "Ref": "ResultFetcherLambda" },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/*/*"
+        }
+      }
+    },
+    "KnowledgeQuerierLambdaPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": { "Ref": "KnowledgeQuerierLambda" },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/*/*"
+        }
+      }
+    },
+    "StartQueryLambdaPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": { "Ref": "StartQueryLambda" },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/*/*"
+        }
+      }
+    },
+    "PollStatusLambdaPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": { "Ref": "PollStatusLambda" },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/*/*"
+        }
+      }
+    },
+    "HistoryManagerLambda": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectName}-history-manager-v0"
+        },
+        "Runtime": "python3.12",
+        "Handler": "index.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": ["LambdaExecutionRole", "Arn"]
+        },
+        "Timeout": 30,
+        "MemorySize": 512,
+        "Environment": {
+          "Variables": {
+            "DYNAMODB_CHAT_HISTORY_TABLE": {
+              "Ref": "DynamoDBChatHistoryTable"
+            },
+            "DATA_S3_BUCKET": {
+              "Ref": "S3Bucket"
+            },
+            "DYNAMODB_REGION": "us-west-2"
+          }
+        },
+        "Code": {
+          "ZipFile": "def lambda_handler(event, context):\n    return {'statusCode': 200, 'body': 'Dummy - will be updated by deployment script'}\n"
+        }
+      }
+    },
+    "BedrockKBSyncLambda": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectName}-bedrock-kb-sync-v0"
+        },
+        "Runtime": "python3.12",
+        "Handler": "index.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": ["LambdaExecutionRole", "Arn"]
+        },
+        "Timeout": 600,
+        "MemorySize": 1024,
+        "Environment": {
+          "Variables": {
+            "DYNAMODB_TABLE": {
+              "Ref": "DynamoDBJobTable"
+            },
+            "DYNAMODB_FOLDER_CONFIG_TABLE": {
+              "Ref": "DynamoDBFolderConfigTable"
+            },
+            "S3_BUCKET": {
+              "Ref": "S3Bucket"
+            },
+            "KNOWLEDGE_BASE_ID": "QBRNP5FY8E",
+            "DATA_SOURCE_ID": "DE8SIWPN5R"
+          }
+        },
+        "Code": {
+          "ZipFile": "import json\nprint('BedrockKBSync Lambda Placeholder')\n"
+        }
+      }
+    },
+    "FolderManagementLambda": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${ProjectName}-folder-management-v0"
+        },
+        "Runtime": "python3.12",
+        "Handler": "index.lambda_handler",
+        "Role": {
+          "Fn::GetAtt": ["LambdaExecutionRole", "Arn"]
+        },
+        "Timeout": 60,
+        "MemorySize": 512,
+        "Environment": {
+          "Variables": {
+            "S3_BUCKET": {
+              "Ref": "S3Bucket"
+            },
+            "DYNAMODB_FOLDER_CONFIG_TABLE": {
+              "Ref": "DynamoDBFolderConfigTable"
+            },
+            "WORKER_LAMBDA_ARN": {
+              "Fn::GetAtt": ["WorkerLambda", "Arn"]
+            },
+            "STATE_MACHINE_ARN": {
+              "Fn::GetAtt": ["PDFProcessingStateMachine", "Arn"]
+            }
+          }
+        },
+        "Code": {
+          "ZipFile": "import json\nprint('FolderManagement Lambda Placeholder')\n"
+        }
+      }
+    },
+    "FolderManagementLambdaPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "FolderManagementLambda"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/*/*"
+        }
+      }
+    },
+    "HistoryManagerLambdaPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": { "Ref": "HistoryManagerLambda" },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/*/*"
+        }
+      }
+    },
+    "JobMethodOptions": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "APIGateway"
+        },
+        "ResourceId": {
+          "Ref": "JobResource"
+        },
+        "HttpMethod": "OPTIONS",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "MOCK",
+          "IntegrationResponses": [
+            {
+              "StatusCode": 200,
+              "ResponseParameters": {
+                "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",
+                "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'",
+                "method.response.header.Access-Control-Allow-Origin": "'*'"
+              },
+              "ResponseTemplates": {
+                "application/json": ""
+              }
+            }
+          ],
+          "RequestTemplates": {
+            "application/json": "{\"statusCode\": 200}"
+          }
+        },
+        "MethodResponses": [
+          {
+            "StatusCode": 200,
+            "ResponseParameters": {
+              "method.response.header.Access-Control-Allow-Headers": true,
+              "method.response.header.Access-Control-Allow-Methods": true,
+              "method.response.header.Access-Control-Allow-Origin": true
+            }
+          }
+        ]
+      }
+    },
+    "ApiJobMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiJobResource" },
+        "HttpMethod": "POST",
+        "AuthorizationType": "COGNITO_USER_POOLS",
+        "AuthorizerId": { "Ref": "CognitoAuthorizer" },
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${JobCreatorLambda.Arn}/invocations"
+          },
+          "Credentials": { "Fn::GetAtt": ["APIGatewayRole", "Arn"] }
+        }
+      }
+    },
+    "ApiReknowledgeMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiReknowledgeResource" },
+        "HttpMethod": "POST",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${JobCreatorLambda.Arn}/invocations"
+          },
+          "Credentials": { "Fn::GetAtt": ["APIGatewayRole", "Arn"] }
+        }
+      }
+    },
+    "ApiReknowledgeMethodOptions": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiReknowledgeResource" },
+        "HttpMethod": "OPTIONS",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "MOCK",
+          "IntegrationResponses": [
+            {
+              "StatusCode": 200,
+              "ResponseParameters": {
+                "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",
+                "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'",
+                "method.response.header.Access-Control-Allow-Origin": "'*'"
+              },
+              "ResponseTemplates": {
+                "application/json": ""
+              }
+            }
+          ],
+          "RequestTemplates": {
+            "application/json": "{\"statusCode\": 200}"
+          }
+        },
+        "MethodResponses": [
+          {
+            "StatusCode": 200,
+            "ResponseParameters": {
+              "method.response.header.Access-Control-Allow-Headers": true,
+              "method.response.header.Access-Control-Allow-Methods": true,
+              "method.response.header.Access-Control-Allow-Origin": true
+            }
+          }
+        ]
+      }
+    },
+    "ApiListPdfsMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiListPdfsResource" },
+        "HttpMethod": "GET",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${JobCreatorLambda.Arn}/invocations"
+          },
+          "Credentials": { "Fn::GetAtt": ["APIGatewayRole", "Arn"] }
+        }
+      }
+    },
+    "ApiDefaultJobGetMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiDefaultJobResource" },
+        "HttpMethod": "GET",
+        "AuthorizationType": "COGNITO_USER_POOLS",
+        "AuthorizerId": { "Ref": "CognitoAuthorizer" },
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${JobCreatorLambda.Arn}/invocations"
+          },
+          "Credentials": { "Fn::GetAtt": ["APIGatewayRole", "Arn"] }
+        }
+      }
+    },
+    "ApiDefaultJobPostMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiDefaultJobResource" },
+        "HttpMethod": "POST",
+        "AuthorizationType": "COGNITO_USER_POOLS",
+        "AuthorizerId": { "Ref": "CognitoAuthorizer" },
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${JobCreatorLambda.Arn}/invocations"
+          },
+          "Credentials": { "Fn::GetAtt": ["APIGatewayRole", "Arn"] }
+        }
+      }
+    },
+    "ApiFoldersGetMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiFoldersResource" },
+        "HttpMethod": "GET",
+        "AuthorizationType": "COGNITO_USER_POOLS",
+        "AuthorizerId": { "Ref": "CognitoAuthorizer" },
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FolderManagementLambda.Arn}/invocations"
+          },
+          "Credentials": {
+            "Fn::GetAtt": ["APIGatewayRole", "Arn"]
+          }
+        }
+      }
+    },
+    "ApiFolderManagementPostMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiFolderManagementResource" },
+        "HttpMethod": "POST",
+        "AuthorizationType": "COGNITO_USER_POOLS",
+        "AuthorizerId": { "Ref": "CognitoAuthorizer" },
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FolderManagementLambda.Arn}/invocations"
+          },
+          "Credentials": {
+            "Fn::GetAtt": ["APIGatewayRole", "Arn"]
+          }
+        }
+      }
+    },
+    "ApiS3PresignedUrlsGetMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiS3PresignedUrlsResource" },
+        "HttpMethod": "GET",
+        "AuthorizationType": "COGNITO_USER_POOLS",
+        "AuthorizerId": { "Ref": "CognitoAuthorizer" },
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FolderManagementLambda.Arn}/invocations"
+          },
+          "Credentials": {
+            "Fn::GetAtt": ["APIGatewayRole", "Arn"]
+          }
+        }
+      }
+    },
+    "ApiTriggerProcessingPostMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiTriggerProcessingResource" },
+        "HttpMethod": "POST",
+        "AuthorizationType": "COGNITO_USER_POOLS",
+        "AuthorizerId": { "Ref": "CognitoAuthorizer" },
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FolderManagementLambda.Arn}/invocations"
+          },
+          "Credentials": {
+            "Fn::GetAtt": ["APIGatewayRole", "Arn"]
+          }
+        }
+      }
+    },
+    "ApiResultsMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiResultsJobIdResource" },
+        "HttpMethod": "GET",
+        "AuthorizationType": "COGNITO_USER_POOLS",
+        "AuthorizerId": { "Ref": "CognitoAuthorizer" },
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ResultFetcherLambda.Arn}/invocations"
+          },
+          "Credentials": { "Fn::GetAtt": ["APIGatewayRole", "Arn"] }
+        }
+      }
+    },
+    "ApiResultsListMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiResultsResource" },
+        "HttpMethod": "GET",
+        "AuthorizationType": "COGNITO_USER_POOLS",
+        "AuthorizerId": { "Ref": "CognitoAuthorizer" },
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ResultFetcherLambda.Arn}/invocations"
+          },
+          "Credentials": { "Fn::GetAtt": ["APIGatewayRole", "Arn"] }
+        }
+      }
+    },
+    "ApiResultsMethodOptions": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiResultsJobIdResource" },
+        "HttpMethod": "OPTIONS",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "MOCK",
+          "IntegrationResponses": [
+            {
+              "StatusCode": 200,
+              "ResponseParameters": {
+                "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",
+                "method.response.header.Access-Control-Allow-Methods": "'GET,OPTIONS'",
+                "method.response.header.Access-Control-Allow-Origin": "'*'"
+              },
+              "ResponseTemplates": {
+                "application/json": ""
+              }
+            }
+          ],
+          "RequestTemplates": {
+            "application/json": "{\"statusCode\": 200}"
+          }
+        },
+        "MethodResponses": [
+          {
+            "StatusCode": 200,
+            "ResponseParameters": {
+              "method.response.header.Access-Control-Allow-Headers": true,
+              "method.response.header.Access-Control-Allow-Methods": true,
+              "method.response.header.Access-Control-Allow-Origin": true
+            }
+          }
+        ]
+      }
+    },
+    "ApiResultsListMethodOptions": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiResultsResource" },
+        "HttpMethod": "OPTIONS",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "MOCK",
+          "IntegrationResponses": [
+            {
+              "StatusCode": 200,
+              "ResponseParameters": {
+                "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",
+                "method.response.header.Access-Control-Allow-Methods": "'GET,OPTIONS'",
+                "method.response.header.Access-Control-Allow-Origin": "'*'"
+              },
+              "ResponseTemplates": {
+                "application/json": ""
+              }
+            }
+          ],
+          "RequestTemplates": {
+            "application/json": "{\"statusCode\": 200}"
+          }
+        },
+        "MethodResponses": [
+          {
+            "StatusCode": 200,
+            "ResponseParameters": {
+              "method.response.header.Access-Control-Allow-Headers": true,
+              "method.response.header.Access-Control-Allow-Methods": true,
+              "method.response.header.Access-Control-Allow-Origin": true
+            }
+          }
+        ]
+      }
+    },
+    "ApiKnowledgeQueryMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiKnowledgeQueryResource" },
+        "HttpMethod": "POST",
+        "AuthorizationType": "COGNITO_USER_POOLS",
+        "AuthorizerId": { "Ref": "CognitoAuthorizer" },
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${KnowledgeQuerierLambda.Arn}/invocations"
+          },
+          "Credentials": { "Fn::GetAtt": ["APIGatewayRole", "Arn"] }
+        }
+      }
+    },
+    "ApiKnowledgeQueryMethodOptions": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiKnowledgeQueryResource" },
+        "HttpMethod": "OPTIONS",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "MOCK",
+          "IntegrationResponses": [
+            {
+              "StatusCode": 200,
+              "ResponseParameters": {
+                "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",
+                "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'",
+                "method.response.header.Access-Control-Allow-Origin": "'*'"
+              },
+              "ResponseTemplates": {
+                "application/json": ""
+              }
+            }
+          ],
+          "RequestTemplates": {
+            "application/json": "{\"statusCode\": 200}"
+          }
+        },
+        "MethodResponses": [
+          {
+            "StatusCode": 200,
+            "ResponseParameters": {
+              "method.response.header.Access-Control-Allow-Headers": true,
+              "method.response.header.Access-Control-Allow-Methods": true,
+              "method.response.header.Access-Control-Allow-Origin": true
+            }
+          }
+        ]
+      }
+    },
+    "ApiKnowledgeQueryStartMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiKnowledgeQueryStartResource" },
+        "HttpMethod": "POST",
+        "AuthorizationType": "COGNITO_USER_POOLS",
+        "AuthorizerId": { "Ref": "CognitoAuthorizer" },
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${StartQueryLambda.Arn}/invocations"
+          },
+          "Credentials": { "Fn::GetAtt": ["APIGatewayRole", "Arn"] }
+        }
+      }
+    },
+    "ApiKnowledgeQueryStartMethodOptions": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiKnowledgeQueryStartResource" },
+        "HttpMethod": "OPTIONS",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "MOCK",
+          "IntegrationResponses": [
+            {
+              "StatusCode": 200,
+              "ResponseParameters": {
+                "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",
+                "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'",
+                "method.response.header.Access-Control-Allow-Origin": "'*'"
+              },
+              "ResponseTemplates": {
+                "application/json": ""
+              }
+            }
+          ],
+          "RequestTemplates": {
+            "application/json": "{\"statusCode\": 200}"
+          }
+        },
+        "MethodResponses": [
+          {
+            "StatusCode": 200,
+            "ResponseParameters": {
+              "method.response.header.Access-Control-Allow-Headers": true,
+              "method.response.header.Access-Control-Allow-Methods": true,
+              "method.response.header.Access-Control-Allow-Origin": true
+            }
+          }
+        ]
+      }
+    },
+    "ApiKnowledgeQueryStatusGetMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiKnowledgeQueryStatusQueryIdResource" },
+        "HttpMethod": "GET",
+        "AuthorizationType": "COGNITO_USER_POOLS",
+        "AuthorizerId": { "Ref": "CognitoAuthorizer" },
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PollStatusLambda.Arn}/invocations"
+          },
+          "Credentials": { "Fn::GetAtt": ["APIGatewayRole", "Arn"] }
+        }
+      }
+    },
+    "ApiKnowledgeQueryStatusGetMethodOptions": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiKnowledgeQueryStatusQueryIdResource" },
+        "HttpMethod": "OPTIONS",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "MOCK",
+          "IntegrationResponses": [
+            {
+              "StatusCode": 200,
+              "ResponseParameters": {
+                "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",
+                "method.response.header.Access-Control-Allow-Methods": "'GET,OPTIONS'",
+                "method.response.header.Access-Control-Allow-Origin": "'*'"
+              },
+              "ResponseTemplates": {
+                "application/json": ""
+              }
+            }
+          ],
+          "RequestTemplates": {
+            "application/json": "{\"statusCode\": 200}"
+          }
+        },
+        "MethodResponses": [
+          {
+            "StatusCode": 200,
+            "ResponseParameters": {
+              "method.response.header.Access-Control-Allow-Headers": true,
+              "method.response.header.Access-Control-Allow-Methods": true,
+              "method.response.header.Access-Control-Allow-Origin": true
+            }
+          }
+        ]
+      }
+    },
+    "ApiHistoryMethodPost": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiHistoryResource" },
+        "HttpMethod": "POST",
+        "AuthorizationType": "COGNITO_USER_POOLS",
+        "AuthorizerId": { "Ref": "CognitoAuthorizer" },
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${HistoryManagerLambda.Arn}/invocations"
+          },
+          "Credentials": { "Fn::GetAtt": ["APIGatewayRole", "Arn"] }
+        }
+      }
+    },
+    "ApiHistoryMethodOptions": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiHistoryResource" },
+        "HttpMethod": "OPTIONS",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "MOCK",
+          "IntegrationResponses": [
+            {
+              "StatusCode": 200,
+              "ResponseParameters": {
+                "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",
+                "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'",
+                "method.response.header.Access-Control-Allow-Origin": "'*'"
+              },
+              "ResponseTemplates": {
+                "application/json": ""
+              }
+            }
+          ],
+          "RequestTemplates": {
+            "application/json": "{\"statusCode\": 200}"
+          }
+        },
+        "MethodResponses": [
+          {
+            "StatusCode": 200,
+            "ResponseParameters": {
+              "method.response.header.Access-Control-Allow-Headers": true,
+              "method.response.header.Access-Control-Allow-Methods": true,
+              "method.response.header.Access-Control-Allow-Origin": true
+            }
+          }
+        ]
+      }
+    },
+    "ApiProxyMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "RestApiId": { "Ref": "APIGateway" },
+        "ResourceId": { "Ref": "ApiProxyResource" },
+        "HttpMethod": "ANY",
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "Type": "AWS_PROXY",
+          "IntegrationHttpMethod": "POST",
+          "Uri": {
+            "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${JobCreatorLambda.Arn}/invocations"
+          },
+          "Credentials": { "Fn::GetAtt": ["APIGatewayRole", "Arn"] }
+        },
+        "MethodResponses": []
+      }
+    },
+    "CognitoAuthorizer": {
+      "Type": "AWS::ApiGateway::Authorizer",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${ProjectName}-cognito-authorizer"
+        },
+        "Type": "COGNITO_USER_POOLS",
+        "RestApiId": {
+          "Ref": "APIGateway"
+        },
+        "ProviderARNs": [
+          {
+            "Fn::GetAtt": ["CognitoUserPool", "Arn"]
+          }
+        ],
+        "IdentitySource": "method.request.header.Authorization"
+      }
+    },
+    "CognitoUserPool": {
+      "Type": "AWS::Cognito::UserPool",
+      "Properties": {
+        "UserPoolName": {
+          "Fn::Sub": "${ProjectName}-user-pool"
+        },
+        "Policies": {
+          "PasswordPolicy": {
+            "MinimumLength": 6,
+            "RequireUppercase": false,
+            "RequireLowercase": false,
+            "RequireNumbers": false,
+            "RequireSymbols": false
+          }
+        },
+        "Schema": [
+          {
+            "Name": "email",
+            "AttributeDataType": "String",
+            "Required": true,
+            "Mutable": true
+          }
+        ],
+        "EmailConfiguration": {
+          "EmailSendingAccount": "COGNITO_DEFAULT"
+        },
+        "AccountRecoverySetting": {
+          "RecoveryMechanisms": [
+            {
+              "Name": "verified_email",
+              "Priority": 1
+            }
+          ]
+        }
+      }
+    },
+    "CognitoUserPoolClient": {
+      "Type": "AWS::Cognito::UserPoolClient",
+      "Properties": {
+        "UserPoolId": {
+          "Ref": "CognitoUserPool"
+        },
+        "ClientName": {
+          "Fn::Sub": "${ProjectName}-frontend-client"
+        },
+        "ExplicitAuthFlows": [
+          "USER_PASSWORD_AUTH"
+        ],
+        "GenerateSecret": false,
+        "RefreshTokenValidity": 30,
+        "AccessTokenValidity": 1,
+        "IdTokenValidity": 1,
+        "TokenValidityUnits": {
+          "AccessToken": "hours",
+          "IdToken": "hours",
+          "RefreshToken": "days"
+        }
+      }
+    },
+    "APIDeployment": {
+      "Type": "AWS::ApiGateway::Deployment",
+      "DependsOn": ["JobMethod", "JobMethodOptions", "ApiJobMethod", "ApiListPdfsMethod", "ApiDefaultJobGetMethod", "ApiDefaultJobPostMethod", "ApiResultsMethod", "ApiResultsListMethod", "ApiResultsMethodOptions", "ApiResultsListMethodOptions", "ApiProxyMethod", "ApiFoldersGetMethod", "ApiFolderManagementPostMethod", "ApiS3PresignedUrlsGetMethod", "ApiTriggerProcessingPostMethod", "ApiHistoryMethodPost", "ApiHistoryMethodOptions"],
+      "Properties": {
+        "RestApiId": {
+          "Ref": "APIGateway"
+        },
+        "StageName": {
+          "Ref": "Environment"
+        },
+        "Description": "Forced redeploy timestamp: 2025-11-17T10:30:00Z"
+      }
+    },
+    "CloudFrontOriginAccessControl": {
+      "Type": "AWS::CloudFront::OriginAccessControl",
+      "Properties": {
+        "OriginAccessControlConfig": {
+          "Name": {
+            "Fn::Sub": "${ProjectName}-oac"
+          },
+          "OriginAccessControlOriginType": "s3",
+          "SigningBehavior": "always",
+          "SigningProtocol": "sigv4",
+          "Description": {
+            "Fn::Sub": "OAC for ${ProjectName} S3 bucket"
+          }
+        }
+      }
+    },
+    "CloudFront": {
+      "Type": "AWS::CloudFront::Distribution",
+      "Properties": {
+        "DistributionConfig": {
+          "Enabled": true,
+          "WebACLId": {
+            "Fn::If": [
+              "HasWebACL",
+              { "Ref": "WebACLArn" },
+              { "Ref": "AWS::NoValue" }
+            ]
+          },
+          "DefaultRootObject": "index.html",
+          "DefaultCacheBehavior": {
+            "TargetOriginId": "S3Origin",
+            "ViewerProtocolPolicy": "redirect-to-https",
+            "AllowedMethods": ["GET", "HEAD"],
+            "CachedMethods": ["GET", "HEAD"],
+            "Compress": true,
+            "ForwardedValues": {
+              "QueryString": false,
+              "Cookies": {
+                "Forward": "none"
+              }
+            },
+            "MinTTL": 0,
+            "DefaultTTL": 3600,
+            "MaxTTL": 86400
+          },
+          "CacheBehaviors": [
+            {
+              "PathPattern": "/api/*",
+              "TargetOriginId": "APIGatewayOrigin",
+              "ViewerProtocolPolicy": "https-only",
+              "AllowedMethods": ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"],
+              "CachedMethods": ["GET", "HEAD"],
+              "Compress": true,
+              "CachePolicyId": "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
+              "OriginRequestPolicyId": "b689b0a8-53d0-40ab-baf2-68738e2966ac"
+            }
+          ],
+          "Origins": [
+            {
+              "Id": "S3Origin",
+              "DomainName": {
+                "Fn::GetAtt": ["FrontendS3Bucket", "RegionalDomainName"]
+              },
+              "OriginAccessControlId": {
+                "Ref": "CloudFrontOriginAccessControl"
+              },
+              "S3OriginConfig": {}
+            },
+            {
+              "Id": "APIGatewayOrigin",
+              "DomainName": {
+                "Fn::Sub": "${APIGateway}.execute-api.${AWS::Region}.amazonaws.com"
+              },
+              "OriginPath": {
+                "Fn::Sub": "/${Environment}"
+              },
+              "CustomOriginConfig": {
+                "HTTPPort": 80,
+                "HTTPSPort": 443,
+                "OriginProtocolPolicy": "https-only",
+                "OriginSSLProtocols": ["TLSv1.2"]
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "Conditions": {
+    "HasWebACL": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            { "Ref": "WebACLArn" },
+            ""
+          ]
+        }
+      ]
+    }
+  },
+  "Outputs": {
+    "WebACLId": {
+      "Value": {
+        "Ref": "WebACLArn"
+      },
+      "Condition": "HasWebACL",
+      "Description": "WAF Web ACL ARN (if provided)"
+    },
+    "FrontendS3BucketName": {
+      "Value": {
+        "Ref": "FrontendS3Bucket"
+      },
+      "Description": "Frontend S3 bucket name (CloudFront)"
+    },
+    "DataS3BucketName": {
+      "Value": {
+        "Ref": "S3Bucket"
+      },
+      "Description": "Data S3 bucket name (Backend - PDF, results)"
+    },
+    "DynamoDBTableName": {
+      "Value": {
+        "Ref": "DynamoDBJobTable"
+      },
+      "Description": "DynamoDB table name"
+    },
+    "DynamoDBChatHistoryTableName": {
+      "Value": {
+        "Ref": "DynamoDBChatHistoryTable"
+      },
+      "Description": "DynamoDB chat history table name"
+    },
+    "DynamoDBFolderConfigTableName": {
+      "Value": {
+        "Ref": "DynamoDBFolderConfigTable"
+      },
+      "Description": "DynamoDB folder configuration table name"
+    },
+    "APIGatewayEndpoint": {
+      "Value": {
+        "Fn::Sub": "https://${APIGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"
+      },
+      "Description": "API Gateway endpoint (Use CloudFront /api/* path instead)"
+    },
+    "CloudFrontDomain": {
+      "Value": {
+        "Fn::GetAtt": ["CloudFront", "DomainName"]
+      },
+      "Description": "CloudFront distribution domain - Use this to access the application"
+    },
+    "CloudFrontDistributionId": {
+      "Value": {
+        "Ref": "CloudFront"
+      },
+      "Description": "CloudFront distribution ID (for cache invalidation)"
+    },
+    "APIProxyPath": {
+      "Value": "/api/*",
+      "Description": "API Gateway is proxied through CloudFront at this path"
+    },
+    "FrontendUrl": {
+      "Value": {
+        "Fn::Sub": "https://${CloudFront.DomainName}/index.html"
+      },
+      "Description": "Frontend application URL"
+    },
+    "StateMachineArn": {
+      "Value": {
+        "Ref": "PDFProcessingStateMachine"
+      },
+      "Description": "Step Functions State Machine ARN for PDF processing"
+    },
+    "DeploymentNote": {
+      "Value": "Frontend files are served from CloudFront (S3 origin). API calls are proxied through CloudFront /api/* to API Gateway. This keeps the API Gateway URL hidden from clients.",
+      "Description": "Architecture note"
+    },
+    "CognitoUserPoolId": {
+      "Value": {
+        "Ref": "CognitoUserPool"
+      },
+      "Description": "Cognito User Pool ID for authentication"
+    },
+    "CognitoClientId": {
+      "Value": {
+        "Ref": "CognitoUserPoolClient"
+      },
+      "Description": "Cognito User Pool Client ID for frontend"
+    }
+  }
+}
